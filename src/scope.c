@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include "check.h"
 #include "expr.h"
 #include "identifier.h"
 #include "scope.h"
@@ -87,11 +88,13 @@ scope_free_all(struct scopes *scopes)
 void
 scope_object_init(struct scope_object *object, enum object_type otype,
 	const struct identifier *ident, const struct identifier *name,
-	const struct type *type, struct expression *value)
+	const struct type *type, struct expression *value,
+	const struct declaration *decl)
 {
 	identifier_dup(&object->ident, ident);
 	identifier_dup(&object->name, name);
 	object->otype = otype;
+	object->decl = decl;
 	if (type) {
 		object->type = type;
 	} else if (value) {
@@ -121,28 +124,52 @@ scope_insert_from_object(struct scope *scope, struct scope_object *object)
 struct scope_object *
 scope_insert(struct scope *scope, enum object_type otype,
 	const struct identifier *ident, const struct identifier *name,
-	const struct type *type, struct expression *value)
+	const struct type *type, struct expression *value,
+	const struct declaration *decl)
 {
 	assert(!type != !value);
 	struct scope_object *o = xcalloc(1, sizeof(struct scope_object));
-	scope_object_init(o, otype, ident, name, type, value);
+	scope_object_init(o, otype, ident, name, type, value, decl);
 	scope_insert_from_object(scope, o);
 	return o;
 }
 
 struct scope_object *
-scope_lookup(struct scope *scope, const struct identifier *ident)
+_scope_lookup(struct scope *scope,
+	const struct identifier *ident,
+	bool require_export)
 {
 	uint32_t hash = name_hash(FNV1A_INIT, ident);
 	struct scope_object *bucket = scope->buckets[hash % SCOPE_BUCKETS];
 	while (bucket) {
-		if (identifier_eq(&bucket->name, ident)) {
-			return bucket;
+		if (!identifier_eq(&bucket->name, ident)) {
+			bucket = bucket->mnext;
+			continue;
 		}
-		bucket = bucket->mnext;
+		const struct declaration *decl = bucket->decl;
+		if (decl && require_export && !decl->exported) {
+			return NULL;
+		}
+		return bucket;
 	}
+
+	// Exported @inline functions can only reference declarations which are
+	// also exported. If we pass through an @inline function while walking
+	// up the scopes, set require_export to true.
+	//
+	// TODO: Raise a better error message than "Unknown object 'example'"
+	// in this case
 	if (scope->parent) {
-		return scope_lookup(scope->parent, ident);
+		struct scope *parent = scope->parent;
+		require_export = require_export || parent->class == SCOPE_FUNC_INLINE;
+		return _scope_lookup(scope->parent, ident, require_export);
 	}
+
 	return NULL;
+}
+
+struct scope_object *
+scope_lookup(struct scope *scope, const struct identifier *ident)
+{
+	return _scope_lookup(scope, ident, scope->class == SCOPE_FUNC_INLINE);
 }

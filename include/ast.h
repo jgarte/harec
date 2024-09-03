@@ -399,6 +399,7 @@ enum func_decl_flags {
 	FN_FINI = 1 << 0,
 	FN_INIT = 1 << 1,
 	FN_TEST = 1 << 2,
+	FN_INLINE = 1 << 3,
 };
 
 struct ast_function_decl {

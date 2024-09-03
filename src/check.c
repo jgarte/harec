@@ -1213,11 +1213,11 @@ create_unpack_bindings(struct context *ctx,
 
 				unpack->object = scope_insert(
 					ctx->scope, O_DECL, &gen, &ident,
-					type_tuple->type, NULL);
+					type_tuple->type, NULL, NULL);
 			} else {
 				unpack->object = scope_insert(
 					ctx->scope, O_BIND, &ident, &ident,
-					type_tuple->type, NULL);
+					type_tuple->type, NULL, NULL);
 			}
 			unpack->offset = type_tuple->offset;
 		}
@@ -1309,7 +1309,7 @@ check_expr_binding(struct context *ctx,
 			}
 			binding->initializer = value;
 			binding->object = scope_insert(ctx->scope,
-				O_CONST, &ident, &ident, NULL, value);
+				O_CONST, &ident, &ident, NULL, value, NULL);
 			goto done;
 		}
 		if (!type) {
@@ -1326,10 +1326,10 @@ check_expr_binding(struct context *ctx,
 				struct identifier gen = {0};
 				gen.name = gen_name(&ctx->id, "static.%d");
 				binding->object = scope_insert(ctx->scope,
-					O_DECL, &gen, &ident, type, NULL);
+					O_DECL, &gen, &ident, type, NULL, NULL);
 			} else {
 				binding->object = scope_insert(ctx->scope,
-					O_BIND, &ident, &ident, type, NULL);
+					O_BIND, &ident, &ident, type, NULL, NULL);
 			}
 		}
 
@@ -2195,7 +2195,7 @@ check_expr_for_each(struct context *ctx,
 			return;
 		}
 		binding->binding.object = scope_insert(ctx->scope, O_BIND, &ident,
-			&ident, var_type, NULL);
+			&ident, var_type, NULL, NULL);
 	}
 
 	if (binding_type != NULL && !type_is_assignable(ctx, var_type, initializer_result)) {
@@ -2490,7 +2490,7 @@ check_expr_match(struct context *ctx,
 			struct scope *scope = scope_push(
 				&ctx->scope, SCOPE_MATCH);
 			_case->object = scope_insert(scope, O_BIND,
-				&ident, &ident, ctype, NULL);
+				&ident, &ident, ctype, NULL, NULL);
 		}
 
 		_case->value = xcalloc(1, sizeof(struct expression));
@@ -2761,7 +2761,7 @@ check_expr_propagate(struct context *ctx,
 			.name = gen_name(&ctx->id, "ok.%d"),
 		};
 		ok_obj = scope_insert(scope, O_BIND, &ok_name,
-			&ok_name, result_type, NULL);
+			&ok_name, result_type, NULL, NULL);
 	}
 
 	case_ok->type = result_type;
@@ -2792,7 +2792,7 @@ check_expr_propagate(struct context *ctx,
 				.name = gen_name(&ctx->id, "err.%d"),
 			};
 			err_obj = scope_insert(scope, O_BIND, &err_name,
-				&err_name, return_type, NULL);
+				&err_name, return_type, NULL, NULL);
 		}
 		case_err->type = return_type;
 		case_err->object = err_obj;
@@ -3824,13 +3824,14 @@ check_expression(struct context *ctx,
 	flexible_refer(expr->result, &expr->result);
 }
 
-static void
+static struct declaration *
 append_decl(struct context *ctx, struct declaration *decl)
 {
 	struct declarations *decls = xcalloc(1, sizeof(struct declarations));
 	decls->decl = *decl;
 	decls->next = ctx->decls;
 	ctx->decls = decls;
+	return &decls->decl;
 }
 
 static void
@@ -3846,7 +3847,7 @@ resolve_unresolved(struct context *ctx)
 
 void
 check_function(struct context *ctx,
-	const struct scope_object *obj,
+	struct scope_object *obj,
 	const struct ast_decl *adecl)
 {
 	const struct ast_function_decl *afndecl = &adecl->function;
@@ -3865,6 +3866,11 @@ check_function(struct context *ctx,
 	decl->symbol = ident_to_sym(&obj->ident);
 	mkident(ctx, &decl->ident, &afndecl->ident, NULL);
 
+	if (!(adecl->function.flags & FN_TEST) || !ctx->is_test) {
+		decl = append_decl(ctx, decl);
+		obj->decl = decl;
+	}
+
 	if (!adecl->function.body) {
 		if (decl->func.flags != 0) {
 			error(ctx, adecl->loc, NULL,
@@ -3872,14 +3878,16 @@ check_function(struct context *ctx,
 			return;
 		}
 		decl->func.body = NULL;
-		goto end; // Prototype
+		return; // Prototype
 	}
 	if (afndecl->symbol != NULL && decl->func.flags != 0) {
 		error(ctx, adecl->loc, NULL,
 			"@symbol cannot be used alongside other function attributes");
 	}
 
-	decl->func.scope = scope_push(&ctx->scope, SCOPE_FUNC);
+	bool is_inline = decl->func.flags & FN_INLINE && adecl->exported;
+	decl->func.scope = scope_push(&ctx->scope,
+			is_inline ? SCOPE_FUNC_INLINE : SCOPE_FUNC);
 	struct ast_function_parameters *params = afndecl->prototype.params;
 	while (params) {
 		if (!params->name) {
@@ -3897,7 +3905,7 @@ check_function(struct context *ctx,
 			type = type_store_lookup_slice(ctx, params->loc, type);
 		}
 		scope_insert(decl->func.scope, O_BIND,
-			&ident, &ident, type, NULL);
+			&ident, &ident, type, NULL, decl);
 		params = params->next;
 	}
 
@@ -3914,19 +3922,24 @@ check_function(struct context *ctx,
 		case FN_TEST:
 			flag = "@test";
 			break;
+		case FN_INLINE:
+			flag = "@inline";
+			break;
 		default:
 			error(ctx, adecl->loc, NULL,
-				"Only one of @init, @fini, or @test may be used in a function declaration");
+				"Only one of @init, @fini, @test, or @inline may be used in a function declaration");
 			break;
 		}
-		if (obj->type->func.result != &builtin_type_void) {
-			error(ctx, adecl->loc, NULL, "%s function must return void", flag);
-		}
-		if (decl->exported) {
-			error(ctx, adecl->loc, NULL, "%s function cannot be exported", flag);
-		}
-		if (afndecl->prototype.params) {
-			error(ctx, adecl->loc, NULL, "%s function cannot have parameters", flag);
+		if (!(decl->func.flags & FN_INLINE)) {
+			if (obj->type->func.result != &builtin_type_void) {
+				error(ctx, adecl->loc, NULL, "%s function must return void", flag);
+			}
+			if (decl->exported) {
+				error(ctx, adecl->loc, NULL, "%s function cannot be exported", flag);
+			}
+			if (afndecl->prototype.params) {
+				error(ctx, adecl->loc, NULL, "%s function cannot have parameters", flag);
+			}
 		}
 	}
 
@@ -3958,11 +3971,6 @@ check_function(struct context *ctx,
 
 	scope_pop(&ctx->scope);
 	ctx->fntype = NULL;
-end:
-	if ((adecl->function.flags & FN_TEST) && !ctx->is_test) {
-		return;
-	}
-	append_decl(ctx, decl);
 }
 
 static struct incomplete_declaration *
@@ -3983,7 +3991,7 @@ incomplete_declaration_create(struct context *ctx, struct location loc,
 	idecl =  xcalloc(1, sizeof(struct incomplete_declaration));
 
 	scope_object_init((struct scope_object *)idecl, O_SCAN,
-			ident, name, NULL, NULL);
+			ident, name, NULL, NULL, NULL);
 	scope_insert_from_object(scope, (struct scope_object *)idecl);
 	return idecl;
 }
@@ -4746,7 +4754,7 @@ scan_decl(struct context *ctx, struct scope *imports, const struct ast_decl *dec
 	case ADECL_FUNC:;
 		const struct ast_function_decl *func = &decl->function;
 		const struct identifier *name = NULL;
-		if (func->flags) {
+		if (func->flags & ~FN_INLINE) {
 			const char *template = NULL;
 			if (func->flags & FN_TEST) {
 				template = "testfunc.%d";
@@ -4904,7 +4912,7 @@ load_import(struct context *ctx, const struct ast_global_decl *defines,
 			// matter which is passed into scope_insert
 			struct scope_object *new = scope_insert(
 					scope, obj->otype, &obj->ident,
-					&name, obj->type, NULL);
+					&name, obj->type, NULL, NULL);
 			new->flags = obj->flags;
 			if (obj->otype != O_TYPE
 					|| type_dealias(ctx, obj->type)->storage
@@ -4924,7 +4932,7 @@ load_import(struct context *ctx, const struct ast_global_decl *defines,
 					.ns = &name,
 				};
 				scope_insert(scope, o->otype, &value_ident,
-					&value_name, NULL, o->value);
+					&value_name, NULL, o->value, NULL);
 			}
 		}
 		return;
@@ -4955,7 +4963,7 @@ load_import(struct context *ctx, const struct ast_global_decl *defines,
 			// obj->type and obj->value are a union, so it doesn't
 			// matter which is passed into scope_insert
 			new = scope_insert(scope, obj->otype, &obj->ident,
-				&obj->name, obj->type, NULL);
+				&obj->name, obj->type, NULL, NULL);
 			new->flags = obj->flags;
 		}
 
@@ -4985,7 +4993,7 @@ load_import(struct context *ctx, const struct ast_global_decl *defines,
 		// obj->type and obj->value are a union, so it doesn't matter
 		// which is passed into scope_insert
 		new = scope_insert(scope, obj->otype, &obj->ident,
-			&name, obj->type, NULL);
+			&name, obj->type, NULL, NULL);
 		new->flags = obj->flags;
 	}
 }

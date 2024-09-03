@@ -359,6 +359,9 @@ emit_decl_const(const struct declaration *decl, FILE *out)
 static void
 emit_decl_func(const struct declaration *decl, FILE *out)
 {
+	// TODO: Emit the inline function body here
+	assert(!(decl->func.flags & FN_INLINE));
+
 	char *ident = identifier_unparse(&decl->ident);
 	const struct type *fntype = decl->func.type;
 	xfprintf(out, "export ");

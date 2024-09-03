@@ -1115,9 +1115,69 @@ gen_expr_control(struct gen_context *ctx, const struct expression *expr)
 	return gv_void;
 }
 
+static const struct scope_object *
+call_extract_lvalue(const struct expression *expr)
+{
+	if (expr->type != EXPR_ACCESS) {
+		return NULL;
+	}
+	if (expr->access.type != ACCESS_IDENTIFIER) {
+		return NULL;
+	}
+	return expr->access.object;
+}
+
+static struct gen_value
+gen_inline_call(struct gen_context *ctx,
+	const struct expression *call_expr,
+	const struct function_decl *fdecl)
+{
+	// TODO: Deal with return expressions here
+	struct call_argument *carg = call_expr->call.args;
+	pushc(ctx->current, "begin @inline call");
+	for (struct scope_object *obj = fdecl->scope->objects;
+			obj; obj = obj->lnext) {
+		assert(carg);
+
+		const struct type *type = obj->type;
+		if (type->size == 0) {
+			continue;
+		}
+		struct gen_binding *gb =
+			xcalloc(1, sizeof(struct gen_binding));
+		gb->value.kind = GV_TEMP;
+		gb->value.type = type;
+		gb->object = obj;
+		gb->value.name = gen_name(&ctx->id, "param.%d");
+
+		struct qbe_value qv = mklval(ctx, &gb->value);
+		struct qbe_value sz = constl(type->size);
+		enum qbe_instr alloc = alloc_for_align(type->align);
+		pushprei(ctx->current, &qv, alloc, &sz, NULL);
+		gen_expr_at(ctx, carg->value, gb->value);
+
+		gb->next = ctx->bindings;
+		ctx->bindings = gb;
+		carg = carg->next;
+	}
+	struct gen_value rval = gen_expr(ctx, fdecl->body);
+	pushc(ctx->current, "end @inline call");
+	return rval;
+}
+
 static struct gen_value
 gen_expr_call(struct gen_context *ctx, const struct expression *expr)
 {
+	const struct scope_object *obj =
+		call_extract_lvalue(expr->call.lvalue);
+	if (obj && obj->decl) {
+		assert(obj->decl->decl_type == DECL_FUNC);
+		const struct function_decl *fdecl = &obj->decl->func;
+		if (fdecl->flags & FN_INLINE) {
+			return gen_inline_call(ctx, expr, fdecl);
+		}
+	}
+
 	struct gen_value lvalue = gen_expr(ctx, expr->call.lvalue);
 	lvalue = gen_autoderef(ctx, lvalue);
 

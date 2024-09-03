@@ -2639,6 +2639,9 @@ parse_fn_decl(struct lexer *lexer, struct ast_function_decl *decl)
 		case T_ATTR_INIT:
 			decl->flags |= FN_INIT;
 			break;
+		case T_ATTR_INLINE:
+			decl->flags |= FN_INLINE;
+			break;
 		case T_ATTR_SYMBOL:
 			decl->symbol = parse_attr_symbol(lexer);
 			break;

@@ -30,6 +30,9 @@ struct scope_object {
 		struct expression *value; // For O_CONST
 	};
 
+	// Non-NULL if object is associated with a top-level declaration
+	const struct declaration *decl;
+
 	struct scope_object *lnext; // Linked list
 	struct scope_object *mnext; // Hash map
 };
@@ -39,6 +42,7 @@ enum scope_class {
 	SCOPE_DEFER,
 	SCOPE_ENUM,
 	SCOPE_FUNC,
+	SCOPE_FUNC_INLINE,
 	SCOPE_LOOP,
 	SCOPE_MATCH,
 	SCOPE_SUBUNIT,
@@ -89,14 +93,16 @@ void scope_free_all(struct scopes *scopes);
 
 void scope_object_init(struct scope_object *obj, enum object_type otype,
 	const struct identifier *ident, const struct identifier *name,
-	const struct type *type, struct expression *value);
+	const struct type *type, struct expression *value,
+	const struct declaration *decl);
 
 void scope_insert_from_object(struct scope *scope, struct scope_object *object);
 
 struct scope_object *scope_insert(
 	struct scope *scope, enum object_type otype,
 	const struct identifier *ident, const struct identifier *name,
-	const struct type *type, struct expression *value);
+	const struct type *type, struct expression *value,
+	const struct declaration *decl);
 
 struct scope_object *scope_lookup(struct scope *scope,
 	const struct identifier *ident);
