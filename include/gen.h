@@ -75,6 +75,9 @@ struct gen_context {
 	const struct type *functype;
 	struct gen_binding *bindings;
 	struct gen_scope *scope;
+
+	// Nonzero when generating an inline function call
+	unsigned int _inline;
 };
 
 struct unit;

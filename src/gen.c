@@ -1132,9 +1132,23 @@ gen_inline_call(struct gen_context *ctx,
 	const struct expression *call_expr,
 	const struct function_decl *fdecl)
 {
-	// TODO: Deal with return expressions here
+	const struct type *ftype = fdecl->type;
 	struct call_argument *carg = call_expr->call.args;
 	pushc(ctx->current, "begin @inline call");
+	ctx->_inline++;
+
+	struct qbe_statement lend;
+	struct qbe_value bend = mklabel(ctx, &lend, ".%d");
+	struct gen_scope *scope = push_scope(ctx, fdecl->scope);
+	scope->end = &bend;
+
+	struct gen_value gvout = gv_void;
+	if (ftype->func.result) {
+		gvout = mkgtemp(ctx, ftype->func.result, ".%d");
+	}
+	scope->out = &gvout;
+	scope->result = gvout;
+
 	for (struct scope_object *obj = fdecl->scope->objects;
 			obj; obj = obj->lnext) {
 		assert(carg);
@@ -1160,9 +1174,16 @@ gen_inline_call(struct gen_context *ctx,
 		ctx->bindings = gb;
 		carg = carg->next;
 	}
+
 	struct gen_value rval = gen_expr(ctx, fdecl->body);
+	branch_copyresult(ctx, rval, gvout, NULL);
+	pop_scope(ctx);
+	push(&ctx->current->body, &lend);
+
 	pushc(ctx->current, "end @inline call");
-	return rval;
+	ctx->_inline--;
+
+	return gvout;
 }
 
 static struct gen_value
