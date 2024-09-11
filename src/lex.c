@@ -23,6 +23,7 @@ static const char *tokens[] = {
 	[T_ATTR_SYMBOL] = "@symbol",
 	[T_ATTR_TEST] = "@test",
 	[T_ATTR_THREADLOCAL] = "@threadlocal",
+	[T_ATTR_UNDEFINED] = "@undefined",
 	[T_UNDERSCORE] = "_",
 	[T_ABORT] = "abort",
 	[T_ALIGN] = "align",
@@ -1191,6 +1192,7 @@ token_str(const struct token *tok)
 		case STORAGE_VALIST:
 		case STORAGE_VOID:
 		case STORAGE_DONE:
+		case STORAGE_UNDEFINED:
 			assert(0);
 		}
 		return buf;

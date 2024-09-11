@@ -8,7 +8,6 @@ expr_hash(const struct expression *expr)
 {
 	assert(expr && expr->type == EXPR_LITERAL);
 
-
 	uint32_t hash = FNV1A_INIT;
 	hash = fnv1a_u32(hash, type_hash(expr->result));
 	// Add the storage a second time so that void and null expressions have
@@ -22,6 +21,7 @@ expr_hash(const struct expression *expr)
 	case STORAGE_VOID:
 	case STORAGE_NULL:
 	case STORAGE_DONE:
+	case STORAGE_UNDEFINED:
 		break;
 	case STORAGE_BOOL:
 		hash = fnv1a(hash, expr->literal.bval);

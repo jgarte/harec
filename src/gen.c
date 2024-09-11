@@ -16,6 +16,11 @@ static const struct gen_value gv_void = {
 	.type = &builtin_type_void,
 };
 
+static const struct gen_value gv_undefined = {
+	.kind = GV_CONST,
+	.type = &builtin_type_undefined,
+};
+
 static struct gen_value gen_expr(struct gen_context *ctx,
 	const struct expression *expr);
 static void gen_expr_at(struct gen_context *ctx,
@@ -84,6 +89,42 @@ gen_defers(struct gen_context *ctx, struct gen_scope *scope)
 }
 
 static void
+gen_store_zero(struct gen_context *ctx,
+	struct gen_value object)
+{
+	const struct type *ty = type_dealias(NULL, object.type);
+	switch (ty->storage) {
+	case STORAGE_ARRAY:
+	case STORAGE_SLICE:
+	case STORAGE_STRING:
+	case STORAGE_STRUCT:
+	case STORAGE_UNION:
+	case STORAGE_TAGGED:
+	case STORAGE_TUPLE:
+	case STORAGE_VALIST:;
+		struct qbe_value size = constl(object.type->size),
+				 zero = constl(0);
+		struct qbe_value base = mklval(ctx, &object);
+		pushi(ctx->current, NULL, Q_CALL, &ctx->rt.memset,
+			&base, &zero, &size, NULL);
+		return;
+	case STORAGE_ENUM:
+		object.type = ty->alias.type;
+		break;
+	default:
+		break; // no-op
+	}
+	if (object.type->size == 0 || object.type->storage == STORAGE_NEVER) {
+		return; // no storage
+	}
+
+	struct qbe_value qobj = mkqval(ctx, &object),
+		zero = constl(0);
+	enum qbe_instr qi = store_for_type(ctx, object.type);
+	pushi(ctx->current, NULL, qi, &zero, &qobj, NULL);
+}
+
+static void
 gen_copy_memcpy(struct gen_context *ctx,
 	struct gen_value dest, struct gen_value src)
 {
@@ -112,6 +153,11 @@ gen_store(struct gen_context *ctx,
 	struct gen_value object,
 	struct gen_value value)
 {
+	if (value.type->storage == STORAGE_UNDEFINED) {
+		gen_store_zero(ctx, object);
+		return;
+	}
+
 	const struct type *ty = type_dealias(NULL, object.type);
 	switch (ty->storage) {
 	case STORAGE_ARRAY:
@@ -1531,6 +1577,11 @@ gen_expr_cast(struct gen_context *ctx, const struct expression *expr)
 		return value;
 	}
 
+	// Special case: cast undefined to type
+	if (from->storage == STORAGE_UNDEFINED) {
+		return gv_undefined;
+	}
+
 	struct gen_value value = gen_expr(ctx, expr->cast.value);
 	struct qbe_value qvalue = mkqval(ctx, &value);
 	struct gen_value result = mkgtemp(ctx, expr->result, ".%d");
@@ -1683,6 +1734,7 @@ gen_expr_cast(struct gen_context *ctx, const struct expression *expr)
 	case STORAGE_VALIST:
 	case STORAGE_VOID:
 	case STORAGE_DONE:
+	case STORAGE_UNDEFINED:
 		abort(); // Invariant
 	}
 
@@ -3279,6 +3331,7 @@ gen_expr(struct gen_context *ctx, const struct expression *expr)
 		return out;
 	case EXPR_DEFINE:
 	case EXPR_VAEND:
+	case EXPR_UNDEFINED:
 		out = gv_void; // no-op
 		break;
 	// gen-specific psuedo-expressions
@@ -3336,6 +3389,9 @@ gen_expr_at(struct gen_context *ctx,
 		return;
 	case EXPR_VASTART:
 		gen_expr_vastart_at(ctx, expr, out);
+		return;
+	case EXPR_UNDEFINED:
+		gen_store_zero(ctx, out);
 		return;
 	default:
 		break; // Prefers non-at style
@@ -3544,6 +3600,12 @@ static struct qbe_data_item *
 gen_data_item(struct gen_context *ctx, const struct expression *expr,
 	struct qbe_data_item *item)
 {
+	if (expr->type == EXPR_UNDEFINED) {
+		item->type = QD_ZEROED;
+		item->zeroed = expr->result->size;
+		return item;
+	}
+
 	assert(expr->type == EXPR_LITERAL);
 
 	struct qbe_def *def;
@@ -3819,6 +3881,7 @@ gen_data_item(struct gen_context *ctx, const struct expression *expr,
 	case STORAGE_RCONST:
 	case STORAGE_NULL:
 	case STORAGE_VALIST:
+	case STORAGE_UNDEFINED:
 		assert(0); // Invariant
 	}
 

@@ -93,6 +93,8 @@ builtin_type_for_storage(enum type_storage storage, bool is_const)
 		return &builtin_type_null; // const null and null are the same type
 	case STORAGE_STRING:
 		return is_const ? &builtin_type_const_str : &builtin_type_str;
+	case STORAGE_UNDEFINED:
+		return &builtin_type_undefined;
 	case STORAGE_ALIAS:
 	case STORAGE_ARRAY:
 	case STORAGE_FUNCTION:
@@ -781,11 +783,12 @@ type_init_from_atype(struct context *ctx,
 	case STORAGE_U16:
 	case STORAGE_U32:
 	case STORAGE_U64:
+	case STORAGE_DONE:
 	case STORAGE_UINT:
 	case STORAGE_UINTPTR:
+	case STORAGE_UNDEFINED:
 	case STORAGE_VALIST:
 	case STORAGE_VOID:
-	case STORAGE_DONE:
 		builtin = builtin_type_for_storage(type->storage, false);
 		type->size = builtin->size;
 		type->align = builtin->align;

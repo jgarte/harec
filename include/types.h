@@ -28,6 +28,7 @@ enum type_storage {
 	STORAGE_U8,
 	STORAGE_UINT,
 	STORAGE_UINTPTR,
+	STORAGE_UNDEFINED,
 	STORAGE_VOID,
 	// Other types
 	STORAGE_ALIAS,
@@ -255,6 +256,7 @@ extern struct type
 	// etc
 	builtin_type_str,
 	builtin_type_const_str,
-	builtin_type_valist;
+	builtin_type_valist,
+	builtin_type_undefined;
 
 #endif

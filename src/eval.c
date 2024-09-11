@@ -126,6 +126,7 @@ itrunc(struct context *ctx, const struct type *type, uint64_t val)
 	case STORAGE_VALIST:
 	case STORAGE_VOID:
 	case STORAGE_DONE:
+	case STORAGE_UNDEFINED:
 		assert(0);
 	}
 	assert(0);
@@ -494,6 +495,7 @@ eval_literal(struct context *ctx,
 	case STORAGE_NEVER:
 	case STORAGE_OPAQUE:
 	case STORAGE_VALIST:
+	case STORAGE_UNDEFINED:
 		abort(); // Invariant
 	}
 	return true;
@@ -578,6 +580,10 @@ eval_cast(struct context *ctx,
 	}
 
 	if (from->storage == STORAGE_ERROR) {
+		return true;
+	} else if (from->storage == STORAGE_UNDEFINED) {
+		out->type = EXPR_UNDEFINED;
+		out->result = to;
 		return true;
 	} else if (from->storage == STORAGE_TAGGED) {
 		out->literal = val.literal.tagged.value->literal;
@@ -679,6 +685,7 @@ eval_cast(struct context *ctx,
 	case STORAGE_ERROR:
 	case STORAGE_VOID:
 	case STORAGE_DONE:
+	case STORAGE_UNDEFINED:
 		return true;
 	}
 
@@ -753,6 +760,7 @@ literal_default(struct context *ctx, struct expression *v)
 	case STORAGE_RUNE:
 	case STORAGE_SLICE:
 	case STORAGE_BOOL:
+	case STORAGE_UNDEFINED:
 		break; // calloc does this for us
 	case STORAGE_STRUCT:
 	case STORAGE_UNION:
@@ -1172,6 +1180,10 @@ eval_expr(struct context *ctx,
 		return eval_tuple(ctx, in, out);
 	case EXPR_UNARITHM:
 		return eval_unarithm(ctx, in, out);
+	case EXPR_UNDEFINED:
+		out->type = EXPR_UNDEFINED;
+		out->result = &builtin_type_undefined;
+		return true;
 	case EXPR_ALLOC:
 	case EXPR_APPEND:
 	case EXPR_ASSERT:

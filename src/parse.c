@@ -899,6 +899,7 @@ parse_literal(struct lexer *lexer)
 	case STORAGE_STRUCT:
 	case STORAGE_TAGGED:
 	case STORAGE_TUPLE:
+	case STORAGE_UNDEFINED:
 	case STORAGE_UNION:
 	case STORAGE_VALIST:
 		assert(0); // Handled in a different nonterminal
@@ -2422,6 +2423,7 @@ struct ast_expression *
 parse_expression(struct lexer *lexer)
 {
 	struct token tok;
+	struct ast_expression *value;
 	switch (lex(lexer, &tok)) {
 	case T_STATIC:
 		return parse_static_expression(lexer, false);
@@ -2435,12 +2437,16 @@ parse_expression(struct lexer *lexer)
 		return parse_for_expression(lexer);
 	case T_IF:
 		return parse_if_expression(lexer);
+	case T_ATTR_UNDEFINED:
+		value = mkexpr(lexer->loc);
+		value->type = EXPR_UNDEFINED;
+		return value;
 	default:
 		break;
 	}
 
 	unlex(lexer, &tok);
-	struct ast_expression *value = parse_unary_expression(lexer);
+	value = parse_unary_expression(lexer);
 	if (value->type != EXPR_ACCESS && value->type != EXPR_SLICE
 			&& (value->type != EXPR_UNARITHM
 				|| value->unarithm.op != UN_DEREF)) {
