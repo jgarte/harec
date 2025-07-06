@@ -161,6 +161,8 @@ type_storage_unparse(enum type_storage storage)
 		return "array";
 	case STORAGE_BOOL:
 		return "bool";
+	case STORAGE_CLOSURE:
+		return "closure";
 	case STORAGE_ENUM:
 		return "enum";
 	case STORAGE_F32:
@@ -239,11 +241,12 @@ bool
 type_is_integer(struct context *ctx, const struct type *type)
 {
 	switch (type->storage) {
-	case STORAGE_VOID:
-	case STORAGE_DONE:
 	case STORAGE_ARRAY:
+	case STORAGE_CLOSURE:
+	case STORAGE_DONE:
 	case STORAGE_FUNCTION:
 	case STORAGE_NEVER:
+	case STORAGE_VOID:
 	case STORAGE_NOMEM:
 	case STORAGE_OPAQUE:
 	case STORAGE_POINTER:
@@ -291,6 +294,7 @@ type_is_numeric(struct context *ctx, const struct type *type)
 	case STORAGE_VOID:
 	case STORAGE_DONE:
 	case STORAGE_ARRAY:
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_NEVER:
 	case STORAGE_NOMEM:
@@ -350,34 +354,35 @@ type_is_signed(struct context *ctx, const struct type *type)
 		storage = type_dealias(ctx, type)->alias.type->storage;
 	}
 	switch (storage) {
-	case STORAGE_VOID:
-	case STORAGE_DONE:
 	case STORAGE_ARRAY:
+	case STORAGE_BOOL:
+	case STORAGE_CLOSURE:
+	case STORAGE_DONE:
 	case STORAGE_ENUM:
-	case STORAGE_ERROR: // XXX?
+	case STORAGE_ERROR:
 	case STORAGE_FUNCTION:
 	case STORAGE_NEVER:
 	case STORAGE_NOMEM:
+	case STORAGE_NULL:
 	case STORAGE_OPAQUE:
 	case STORAGE_POINTER:
+	case STORAGE_RCONST:
+	case STORAGE_RUNE:
+	case STORAGE_SIZE:
 	case STORAGE_SLICE:
 	case STORAGE_STRING:
 	case STORAGE_STRUCT:
 	case STORAGE_TAGGED:
 	case STORAGE_TUPLE:
-	case STORAGE_UNION:
-	case STORAGE_BOOL:
-	case STORAGE_RCONST:
-	case STORAGE_RUNE:
-	case STORAGE_NULL:
-	case STORAGE_SIZE:
-	case STORAGE_U8:
 	case STORAGE_U16:
 	case STORAGE_U32:
 	case STORAGE_U64:
+	case STORAGE_U8:
 	case STORAGE_UINT:
 	case STORAGE_UINTPTR:
+	case STORAGE_UNION:
 	case STORAGE_VALIST:
+	case STORAGE_VOID:
 		return false;
 	case STORAGE_I8:
 	case STORAGE_I16:
@@ -448,6 +453,7 @@ type_hash(const struct type *type)
 		hash = fnv1a_size(hash, type->array.length);
 		hash = fnv1a_u32(hash, type->array.expandable);
 		break;
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 		hash = fnv1a_u32(hash, type_hash(type->func.result));
 		hash = fnv1a(hash, type->func.variadism);
@@ -950,6 +956,8 @@ type_is_assignable(struct context *ctx,
 	case STORAGE_TAGGED:
 		return tagged_select_subtype(ctx, to, from_orig, true) != NULL
 			|| tagged_subset_compat(ctx, to, from);
+	case STORAGE_CLOSURE:
+		assert(0); // TODO CLOSURE
 	// The following types are only assignable from themselves, and are
 	// handled above:
 	case STORAGE_BOOL:
@@ -1109,6 +1117,8 @@ type_is_castable(struct context *ctx, const struct type *to, const struct type *
 		return to->storage == STORAGE_ARRAY
 			|| to->storage == STORAGE_SLICE
 			? to_orig : NULL;
+	case STORAGE_CLOSURE:
+		assert(0); // TODO CLOSURE
 	// Cannot be cast:
 	case STORAGE_STRING:
 	case STORAGE_BOOL:

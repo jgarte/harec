@@ -156,6 +156,7 @@ gen_load(struct gen_context *ctx, struct gen_value object)
 	const struct type *ty = type_dealias(NULL, object.type);
 	switch (ty->storage) {
 	case STORAGE_ARRAY:
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_SLICE:
 	case STORAGE_STRING:
@@ -1155,7 +1156,18 @@ gen_expr_call(struct gen_context *ctx, const struct expression *expr)
 {
 	struct gen_value lvalue = gen_autoderef_expr(ctx, expr->call.lvalue);
 	const struct type *rtype = type_dealias(NULL, lvalue.type);
-	assert(rtype->storage == STORAGE_FUNCTION);
+	assert(rtype->storage == STORAGE_FUNCTION ||
+		rtype->storage == STORAGE_CLOSURE);
+	struct qbe_value qlvalue = mkqval(ctx, &lvalue);
+	struct qbe_value qenv = mkqtmp(ctx, ctx->arch.ptr, ".%d");
+
+	if (rtype->storage == STORAGE_CLOSURE) {
+		pushi(ctx->current, &qenv, Q_COPY, &qlvalue, NULL);
+		qenv.type = &qbe_env;
+
+		enum qbe_instr load = load_for_type(ctx, &builtin_type_uintptr);
+		pushi(ctx->current, &qlvalue, load, &qlvalue, NULL);
+	}
 
 	struct qbe_statement call = {
 		.type = Q_INSTR,
@@ -1174,8 +1186,15 @@ gen_expr_call(struct gen_context *ctx, const struct expression *expr)
 	struct type_func_param *param = rtype->func.params;
 	struct qbe_arguments *args, **next = &call.args;
 	args = *next = xcalloc(1, sizeof(struct qbe_arguments));
-	args->value = mkqval(ctx, &lvalue);
+	args->value = qlvalue;
 	next = &args->next;
+
+	if (rtype->storage == STORAGE_CLOSURE) {
+		args = *next = xcalloc(1, sizeof(struct qbe_arguments));
+		args->value = qenv;
+		next = &args->next;
+	}
+
 	for (struct call_argument *carg = expr->call.args; ; carg = carg->next) {
 		if (!param && !cvar && rtype->func.variadism == VARIADISM_C) {
 			cvar = true;
@@ -1730,6 +1749,8 @@ gen_expr_cast(struct gen_context *ctx, const struct expression *expr)
 		assert(from->storage == STORAGE_SLICE);
 		pushi(ctx->current, &qresult, Q_COPY, &qvalue, NULL);
 		break;
+	case STORAGE_CLOSURE:
+		assert(0); // TODO CLOSURE
 	case STORAGE_ALIAS:
 	case STORAGE_BOOL:
 	case STORAGE_DONE:
@@ -1752,6 +1773,62 @@ gen_expr_cast(struct gen_context *ctx, const struct expression *expr)
 	}
 
 	return result;
+}
+
+static struct gen_value
+gen_expr_closure(struct gen_context *ctx, const struct expression *expr)
+{
+	const struct type *cltype = type_dereference(NULL, expr->result, false);
+	assert(cltype->storage == STORAGE_CLOSURE);
+
+	// Allocate closure
+	size_t cl_size = expr->closure.size;
+	size_t cl_align = ctx->arch.ptr->size;
+	for (size_t i = 0; i < expr->closure.ncapture; ++i) {
+		struct capture capture = expr->closure.captures[i];
+		size_t align = capture.object->type->align;
+		if (align > cl_align) {
+			cl_align = align;
+		}
+	}
+
+	enum qbe_instr alloc = alloc_for_align(cl_align);
+	struct gen_value closure = mkgtemp(ctx, expr->result, ".%d");
+	struct qbe_value qclosure = mkqval(ctx, &closure);
+	struct qbe_value qcl_size = constl(cl_size);
+	pushi(ctx->current, &qclosure, alloc, &qcl_size, NULL);
+
+	// Populate environment
+	struct gen_value body = gen_access_ident(ctx, expr->closure.body);
+	gen_store(ctx, closure, body);
+
+	size_t offs = 0;
+	struct qbe_value qptr = mkqtmp(ctx, ctx->arch.ptr, ".%d");
+	pushi(ctx->current, &qptr, Q_COPY, &qclosure, NULL);
+
+	for (size_t i = 0; i < expr->closure.ncapture; ++i) {
+		struct capture capture = expr->closure.captures[i];
+		pushc(ctx->current, "Store capture %s",
+			capture.object->name->name);
+
+		struct gen_value val = gen_access_ident(ctx, capture.object);
+		if (offs < capture.offset) {
+			struct qbe_value adjust = constl(capture.offset - offs);
+			pushi(ctx->current, &qptr, Q_ADD, &qptr, &adjust, NULL);
+			offs = capture.offset;
+		}
+
+		struct gen_value var = val;
+		var.name = qptr.name;
+
+		struct gen_value ld = gen_load(ctx, val);
+		struct qbe_value qld = mkqval(ctx, &ld);
+		qld = extend(ctx, qld, capture.object->type);
+		ld.name = qld.name;
+		gen_store(ctx, var, ld);
+	}
+
+	return closure;
 }
 
 static struct gen_value
@@ -2050,6 +2127,7 @@ gen_expr_literal(struct gen_context *ctx, const struct expression *expr)
 		return val;
 	case Q__VOID:
 	case Q__AGGREGATE:
+	case Q__ENV:
 	case Q__UNION:
 		assert(0); // Invariant
 	}
@@ -3277,6 +3355,9 @@ gen_expr(struct gen_context *ctx, const struct expression *expr)
 	case EXPR_CAST:
 		out = gen_expr_cast(ctx, expr);
 		break;
+	case EXPR_CLOSURE:
+		out = gen_expr_closure(ctx, expr);
+		break;
 	case EXPR_COMPOUND:
 		out = gen_expr_compound_with(ctx, expr, NULL);
 		break;
@@ -3436,6 +3517,14 @@ gen_function_decl(struct gen_context *ctx, const struct declaration *decl)
 		return; // Prototype
 	}
 
+	// Reset gen_context for a new function
+	for (struct gen_binding *binding = ctx->bindings; binding;) {
+		struct gen_binding *next = binding->next;
+		free(binding);
+		binding = next;
+	}
+	ctx->bindings = NULL;
+
 	struct qbe_def *qdef = xcalloc(1, sizeof(struct qbe_def));
 	qdef->kind = Q_FUNC;
 	qdef->exported = decl->exported;
@@ -3460,6 +3549,37 @@ gen_function_decl(struct gen_context *ctx, const struct declaration *decl)
 	}
 
 	struct qbe_func_param *param, **next = &qdef->func.params;
+	if (decl->func.scope->class == SCOPE_CLOSURE) {
+		param = *next = xcalloc(1, sizeof(struct qbe_func_param));
+		param->name = xstrdup("__env");
+		param->type = &qbe_env;
+		next = &param->next;
+
+		struct qbe_value env = {
+			.kind = QV_TEMPORARY,
+			.type = &qbe_env,
+			.name = "__env",
+		};
+
+		for (size_t i = 0; i < decl->func.ncapture; ++i) {
+			struct capture capture = decl->func.captures[i];
+			const struct scope_object *object = capture.object;
+			struct gen_binding *gb =
+				xcalloc(1, sizeof(struct gen_binding));
+			gb->value.name = gen_name(&ctx->id, "capture.%d");
+			gb->value.kind = GV_TEMP;
+			gb->value.type = object->type;
+			gb->object = object;
+
+			struct qbe_value qv = mklval(ctx, &gb->value);
+			struct qbe_value off = constl(capture.offset);
+			pushprei(ctx->current, &qv, Q_ADD, &env, &off, NULL);
+
+			gb->next = ctx->bindings;
+			ctx->bindings = gb;
+		}
+	}
+
 	for (struct scope_object *obj = decl->func.scope->objects;
 			obj; obj = obj->lnext) {
 		const struct type *type = obj->type;
@@ -3878,6 +3998,7 @@ gen_data_item(struct gen_context *ctx, const struct expression *expr,
 	case STORAGE_NOMEM:
 	case STORAGE_VOID:
 		break;
+	case STORAGE_CLOSURE:
 	case STORAGE_ENUM:
 	case STORAGE_UNION:
 	case STORAGE_ALIAS:

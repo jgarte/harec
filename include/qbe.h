@@ -14,6 +14,7 @@ enum qbe_stype {
 	Q_SINGLE = 's',
 	Q_DOUBLE = 'd',
 	Q__AGGREGATE = 'A',
+	Q__ENV = 'E',
 	Q__UNION = 'U',
 };
 
@@ -46,7 +47,8 @@ extern const struct qbe_type
 	qbe_long,
 	qbe_single,
 	qbe_double,
-	qbe_void;
+	qbe_void,
+	qbe_env;
 
 enum qbe_value_kind {
 	QV_CONST,

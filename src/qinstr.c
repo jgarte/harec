@@ -67,6 +67,7 @@ store_for_type(struct gen_context *ctx, const struct type *type)
 	case STORAGE_ALIAS:
 		return store_for_type(ctx, type->alias.type);
 	case STORAGE_ARRAY:
+	case STORAGE_CLOSURE:
 	case STORAGE_DONE:
 	case STORAGE_ERROR:
 	case STORAGE_FCONST:
@@ -138,6 +139,7 @@ load_for_type(struct gen_context *ctx, const struct type *type)
 	case STORAGE_ALIAS:
 		return load_for_type(ctx, type->alias.type);
 	case STORAGE_ARRAY:
+	case STORAGE_CLOSURE:
 	case STORAGE_ERROR:
 	case STORAGE_FCONST:
 	case STORAGE_FUNCTION:

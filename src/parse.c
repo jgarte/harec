@@ -251,11 +251,22 @@ parse_imports(struct lexer *lexer, struct ast_subunit *subunit)
 	}
 }
 
-static void
-parse_parameter_list(struct lexer *lexer, struct ast_function_type *type)
-{
+static enum type_storage
+parse_parameter_list(struct lexer *lexer, struct ast_function_type *type) {
 	struct token tok = {0}, tok2 = {0};
-	want(lexer, T_LPAREN, NULL);
+
+	enum type_storage storage;
+	switch (lex(lexer, &tok)) {
+	case T_LPAREN:
+		storage = STORAGE_FUNCTION;
+		break;
+	case T_LBRACKET:
+		storage = STORAGE_CLOSURE;
+		break;
+	default:
+		synerr(&tok, T_LPAREN, T_LBRACKET, T_EOF);
+	}
+
 	type->params = mkfuncparams(lexer->loc);
 	struct ast_function_parameters **next = &type->params;
 	for (;;) {
@@ -280,11 +291,21 @@ parse_parameter_list(struct lexer *lexer, struct ast_function_type *type)
 			*next = NULL;
 			type->variadism = VARIADISM_C;
 			want(lexer, T_RPAREN, NULL);
-			return;
+			goto exit;
 		case T_RPAREN:
+			if (storage == STORAGE_CLOSURE) {
+				synerr(&tok, T_RBRACKET, T_NAME, T_ELLIPSIS, T_EOF);
+			}
 			free(*next);
 			*next = NULL;
-			return;
+			goto exit;
+		case T_RBRACKET:
+			if (storage == STORAGE_FUNCTION) {
+				synerr(&tok, T_RPAREN, T_NAME, T_EOF);
+			}
+			free(*next);
+			*next = NULL;
+			goto exit;
 		default:
 			unlex(lexer, &tok);
 			(*next)->type = parse_type(lexer);
@@ -308,20 +329,32 @@ parse_parameter_list(struct lexer *lexer, struct ast_function_type *type)
 		case T_ELLIPSIS:
 			type->variadism = VARIADISM_HARE;
 			want(lexer, T_RPAREN, NULL);
-			return;
+			goto exit;
+		case T_RBRACKET:
+			if (storage == STORAGE_FUNCTION) {
+				synerr(&tok, T_RPAREN, T_ELLIPSIS, T_COMMA, T_EOF);
+			}
+			goto exit;
 		case T_RPAREN:
-			return;
+			if (storage == STORAGE_CLOSURE) {
+				synerr(&tok, T_RPAREN, T_ELLIPSIS, T_COMMA, T_EOF);
+			}
+			goto exit;
 		default:
 			synerr(&tok, T_COMMA, T_ELLIPSIS, T_RPAREN, T_EQUAL, T_EOF);
 		}
 	}
+
+exit:
+	return storage;
 }
 
-static void
+static enum type_storage
 parse_prototype(struct lexer *lexer, struct ast_function_type *type)
 {
-	parse_parameter_list(lexer, type);
+	enum type_storage storage = parse_parameter_list(lexer, type);
 	type->result = parse_type(lexer);
+	return storage;
 }
 
 static enum type_storage
@@ -726,8 +759,7 @@ parse_type(struct lexer *lexer)
 		break;
 	case T_FN:
 		type = mktype(lexer->loc);
-		type->storage = STORAGE_FUNCTION;
-		parse_prototype(lexer, &type->func);
+		type->storage = parse_prototype(lexer, &type->func);
 		break;
 	case T_ELLIPSIS:
 		unwrap = true;
@@ -848,6 +880,7 @@ parse_literal(struct lexer *lexer)
 		assert(0); // Handled above
 	case STORAGE_ALIAS:
 	case STORAGE_ARRAY:
+	case STORAGE_CLOSURE:
 	case STORAGE_ENUM:
 	case STORAGE_FUNCTION:
 	case STORAGE_POINTER:
@@ -2363,6 +2396,23 @@ parse_compound_expression(struct lexer *lexer)
 	return exp;
 }
 
+static struct ast_expression *
+parse_fn_expression(struct lexer *lexer)
+{
+	struct ast_expression *exp = mkexpr(lexer->loc);
+	exp->type = EXPR_CLOSURE;
+	exp->closure.prototype = parse_type(lexer);
+
+	if (exp->closure.prototype->storage != STORAGE_CLOSURE) {
+		error(exp->closure.prototype->loc,
+			"Cannot use function prototype where closure is expected (use fn[...] instead of fn(...))");
+	}
+
+	want(lexer, T_ARROW, NULL);
+	exp->closure.body = parse_expression(lexer);
+	return exp;
+}
+
 struct ast_expression *
 parse_expression(struct lexer *lexer)
 {
@@ -2380,6 +2430,9 @@ parse_expression(struct lexer *lexer)
 		return parse_for_expression(lexer);
 	case T_IF:
 		return parse_if_expression(lexer);
+	case T_FN:
+		unlex(lexer, &tok);
+		return parse_fn_expression(lexer);
 	default:
 		break;
 	}
@@ -2600,7 +2653,10 @@ parse_fn_decl(struct lexer *lexer, struct ast_function_decl *decl)
 	}
 	want(lexer, T_FN, NULL);
 	decl->ident = parse_identifier(lexer, NULL, NULL);
-	parse_prototype(lexer, &decl->prototype);
+	enum type_storage storage = parse_prototype(lexer, &decl->prototype);
+	if (storage != STORAGE_FUNCTION) {
+		error(tok.loc, "syntax error: functions cannot be declared as closures");
+	}
 
 	switch (lex(lexer, &tok)) {
 	case T_EQUAL:

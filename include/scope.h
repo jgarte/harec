@@ -47,11 +47,17 @@ enum scope_class {
 	SCOPE_SUBUNIT,
 	SCOPE_UNIT,
 	SCOPE_DEFINES,
+	SCOPE_CLOSURE,
 };
 
 struct yield {
 	struct expression **expression;
 	struct yield *next;
+};
+
+struct scope_capture {
+	const struct scope_object *object;
+	struct scope_capture *next;
 };
 
 struct scope {
@@ -70,6 +76,9 @@ struct scope {
 	// Used for function parameters and enum values, where order matters
 	struct scope_object *objects;
 	struct scope_object **next;
+
+	// Objects captured from parent scope
+	struct scope_capture **captures;
 
 	// Hash map in reverse insertion order
 	// Used for lookups, and accounts for shadowing

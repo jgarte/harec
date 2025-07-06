@@ -46,6 +46,9 @@ qbe_double = {
 },
 qbe_void = {
 	.stype = Q__VOID,
+},
+qbe_env = {
+	.stype = Q__ENV,
 };
 
 const char *qbe_instr[Q_LAST_INSTR] = {

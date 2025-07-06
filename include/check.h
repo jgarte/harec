@@ -54,6 +54,8 @@ struct function_decl {
 	struct expression *body;
 	struct scope *scope;
 	unsigned int flags; // enum func_decl_flags
+	struct capture *captures; // closures
+	size_t ncapture;
 };
 
 struct global_decl {

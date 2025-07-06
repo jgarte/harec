@@ -201,6 +201,11 @@ struct ast_expression_cast {
 	struct ast_type *type;
 };
 
+struct ast_expression_closure {
+	struct ast_type *prototype;
+	struct ast_expression *body;
+};
+
 struct ast_expression_literal {
 	enum type_storage storage;
 	union {
@@ -359,6 +364,7 @@ struct ast_expression {
 		struct ast_expression_binding binding;
 		struct ast_expression_call call;
 		struct ast_expression_cast cast;
+		struct ast_expression_closure closure;
 		struct ast_expression_compound compound;
 		struct ast_expression_control control;
 		struct ast_expression_defer defer;

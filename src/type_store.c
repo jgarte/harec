@@ -98,6 +98,7 @@ builtin_type_for_storage(enum type_storage storage)
 		return &builtin_type_str;
 	case STORAGE_ALIAS:
 	case STORAGE_ARRAY:
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_FCONST:
 	case STORAGE_ICONST:
@@ -885,6 +886,7 @@ type_init_from_atype(struct context *ctx,
 			type->size = memb.size * type->array.length;
 		}
 		break;
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 		type->size = SIZE_UNDEFINED;
 		type->align = ALIGN_UNDEFINED;

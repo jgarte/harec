@@ -1059,6 +1059,7 @@ type_promote(struct context *ctx, const struct type *a, const struct type *b)
 	// Cannot be promoted
 	case STORAGE_ARRAY:
 	case STORAGE_BOOL:
+	case STORAGE_CLOSURE:
 	case STORAGE_DONE:
 	case STORAGE_FUNCTION:
 	case STORAGE_NOMEM:
@@ -1112,6 +1113,7 @@ type_has_default(struct context *ctx, const struct type *type)
 	case STORAGE_UINTPTR:
 	case STORAGE_VOID:
 		return true;
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_NEVER:
 	case STORAGE_OPAQUE:
@@ -1417,7 +1419,7 @@ check_expr_call(struct context *ctx,
 		mkerror(expr);
 		return;
 	}
-	if (fntype->storage != STORAGE_FUNCTION) {
+	if (fntype->storage != STORAGE_FUNCTION && fntype->storage != STORAGE_CLOSURE) {
 		error(ctx, aexpr->loc, expr, "Cannot call non-function type");
 		return;
 	}
@@ -1600,6 +1602,167 @@ check_expr_cast(struct context *ctx,
 		break;
 	}
 	expr->result = aexpr->cast.kind == C_TEST? &builtin_type_bool : secondary;
+}
+
+static struct expression *
+lower_function_return(struct context *ctx,
+	const struct type *return_type,
+	struct expression *body,
+	struct location loc
+) {
+	if (!type_is_assignable(ctx, return_type, body->result)) {
+		char *restypename = gen_typename(body->result);
+		char *fntypename = gen_typename(return_type);
+		error(ctx, loc, body,
+			"Expression result type %s is not assignable to closure result type %s",
+			restypename, fntypename);
+		free(restypename);
+		free(fntypename);
+		return NULL;
+	}
+
+	if (return_type->storage != STORAGE_NEVER &&
+			return_type->size == SIZE_UNDEFINED) {
+		char *fntypename = gen_typename(return_type);
+		error(ctx, loc, body,
+			"Types with undefined size such as %s cannot be returned, consider using a pointer instead",
+			fntypename);
+		free(fntypename);
+		return NULL;
+	}
+
+	return lower_implicit_cast(ctx, return_type, body);
+}
+
+static void
+populate_function_scope(struct context *ctx,
+	const struct type *fntype,
+	struct ast_function_parameters *params,
+	struct scope *scope
+) {
+	while (params) {
+		if (params->name == NULL) {
+			error(ctx, params->loc, NULL,
+				"Function parameters must be named");
+			return;
+		}
+		const struct type *type = type_store_lookup_atype(
+				ctx, params->type);
+		if (fntype->func.variadism == VARIADISM_HARE && !params->next) {
+			type = type_store_lookup_slice(ctx, params->loc, type);
+		}
+		scope_insert(scope, O_BIND, params->name,
+				params->name, type, NULL);
+		params = params->next;
+	}
+}
+
+static int
+capturecmp(const void *_a, const void *_b)
+{
+	const struct capture *a = (const struct capture *)_a;
+	const struct capture *b = (const struct capture *)_b;
+	const struct type *type_a = a->object->type;
+	const struct type *type_b = b->object->type;
+	if (type_a->align < type_b->align) {
+		return -1;
+	} else if (type_a->align > type_b->align) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+static void
+check_expr_closure(struct context *ctx,
+	const struct ast_expression *aexpr,
+	struct expression *expr,
+	const struct type *hint)
+{
+	expr->type = EXPR_CLOSURE;
+
+	// TODO CLOSURE: Split up function scope and closure scope
+	const struct type *fntype = type_store_lookup_atype(
+		ctx, aexpr->closure.prototype);
+
+	struct scope_capture *scope_captures = {0};
+	struct scope *scope = scope_push(&ctx->scope, SCOPE_CLOSURE);
+	scope->hint = fntype->func.result;
+	scope->captures = &scope_captures;
+	expr->closure.scope = scope;
+
+	struct ast_function_parameters *params =
+		aexpr->closure.prototype->func.params;
+	populate_function_scope(ctx, fntype, params, scope);
+
+	const struct type *prev_fntype = ctx->fntype;
+	ctx->fntype = fntype;
+
+	struct expression *body = xcalloc(1, sizeof(struct expression));
+	check_expression(ctx, aexpr->closure.body, body, fntype->func.result);
+	body = lower_function_return(ctx, fntype->func.result, body, aexpr->loc);
+
+	ctx->fntype = prev_fntype;
+
+	// Build the structure of the captures object, sorted by alignment
+	size_t ncapture = 0;
+	for (struct scope_capture *capture = scope_captures;
+			capture; capture = capture->next) {
+		++ncapture;
+	}
+
+	size_t i = 0;
+	struct capture *captures = xcalloc(ncapture, sizeof(struct capture));
+	for (struct scope_capture *capture = scope_captures; capture;) {
+		captures[i].object = capture->object;
+
+		struct scope_capture *next = capture->next;
+		free(capture);
+		capture = next;
+		++i;
+	}
+
+	// Sort by alignment
+	qsort(captures, ncapture, sizeof(struct capture), &capturecmp);
+
+	// Assign offsets
+	size_t off = builtin_type_uintptr.size;
+	for (size_t i = 0; i < ncapture; ++i) {
+		size_t align = captures[i].object->type->align;
+		if (off % align != 0) {
+			off += align - off % align;
+		}
+		captures[i].offset = off;
+		off += captures[i].object->type->size;
+		if (off % align != 0) {
+			off += align - off % align;
+		}
+	}
+
+	expr->closure.captures = captures;
+	expr->closure.ncapture = ncapture;
+	expr->closure.size = off;
+
+	struct ident *id = intern_generated(ctx, ".closure.%d");
+	struct declaration decl = {
+		.decl_type = DECL_FUNC,
+		.file = aexpr->loc.file,
+		.ident = id,
+		.func = {
+			.type = fntype,
+			.body = body,
+			.scope = scope,
+			.captures = captures,
+			.ncapture = ncapture,
+		},
+	};
+	append_decl(ctx, &decl);
+
+	expr->closure.body = scope_insert(scope->parent,
+		O_DECL, id, NULL, fntype, NULL);
+
+	expr->result = type_store_lookup_pointer(ctx, aexpr->loc, fntype, false);
+	scope_pop(&ctx->scope);
 }
 
 static void
@@ -1819,6 +1982,7 @@ check_expr_literal(struct context *ctx,
 	case STORAGE_F64:
 		expr->literal.fval = aexpr->literal.fval;
 		break;
+	case STORAGE_CLOSURE:
 	case STORAGE_ENUM:
 	case STORAGE_ERROR:
 	case STORAGE_UINTPTR:
@@ -3697,6 +3861,9 @@ check_expression(struct context *ctx,
 	case EXPR_CAST:
 		check_expr_cast(ctx, aexpr, expr, hint);
 		break;
+	case EXPR_CLOSURE:
+		check_expr_closure(ctx, aexpr, expr, hint);
+		break;
 	case EXPR_COMPOUND:
 		check_expr_compound(ctx, aexpr, expr, hint);
 		break;
@@ -3819,22 +3986,7 @@ check_function(struct context *ctx,
 
 	decl->func.scope = scope_push(&ctx->scope, SCOPE_FUNC);
 	struct ast_function_parameters *params = afndecl->prototype.params;
-	while (params) {
-		if (params->name == NULL) {
-			error(ctx, params->loc, NULL,
-				"Function parameters must be named");
-			return;
-		}
-		const struct type *type = type_store_lookup_atype(
-				ctx, params->type);
-		if (obj->type->func.variadism == VARIADISM_HARE
-				&& !params->next) {
-			type = type_store_lookup_slice(ctx, params->loc, type);
-		}
-		scope_insert(decl->func.scope, O_BIND, params->name,
-				params->name, type, NULL);
-		params = params->next;
-	}
+	populate_function_scope(ctx, obj->type, params, decl->func.scope);
 
 	// TODO: Add function name to errors
 	if (decl->func.flags != 0) {
@@ -3871,27 +4023,8 @@ check_function(struct context *ctx,
 	check_expression(ctx, afndecl->body, body, obj->type->func.result);
 	resolve_unresolved(ctx);
 
-	if (!type_is_assignable(ctx, obj->type->func.result, body->result)) {
-		char *restypename = gen_typename(body->result);
-		char *fntypename = gen_typename(obj->type->func.result);
-		error(ctx, afndecl->body->loc, body,
-			"Expression result type %s is not assignable to function result type %s",
-			restypename, fntypename);
-		free(restypename);
-		free(fntypename);
-		return;
-	}
-
-	if (obj->type->func.result->storage != STORAGE_NEVER &&
-			obj->type->func.result->size == SIZE_UNDEFINED) {
-		char *fntypename = gen_typename(obj->type->func.result);
-		error(ctx, afndecl->body->loc, body,
-			"Types with undefined size such as %s cannot be returned, consider using a pointer instead",
-			fntypename);
-		free(fntypename);
-		return;
-	}
-	decl->func.body = lower_implicit_cast(ctx, obj->type->func.result, body);
+	decl->func.body = lower_function_return(ctx,
+			obj->type->func.result, body, afndecl->body->loc);
 
 	scope_pop(&ctx->scope);
 	ctx->fntype = NULL;
@@ -4063,6 +4196,7 @@ check_exported_type(struct context *ctx,
 	case STORAGE_SLICE:
 		check_exported_type(ctx, loc, type->array.members);
 		break;
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 		for (const struct type_func_param *param = type->func.params;
 				param; param = param->next) {

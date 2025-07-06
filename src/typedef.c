@@ -193,13 +193,14 @@ emit_literal(const struct expression *expr, FILE *out)
 		break;
 	case STORAGE_UNION:
 		assert(0); // TODO, blocked on union support in eval
-	case STORAGE_ALIAS:
-	case STORAGE_ERROR:
-	case STORAGE_FUNCTION:
-	case STORAGE_NEVER:
 	case STORAGE_NOMEM:
 		xfprintf(out, "nomem");
 		break;
+	case STORAGE_ALIAS:
+	case STORAGE_ERROR:
+	case STORAGE_CLOSURE:
+	case STORAGE_FUNCTION:
+	case STORAGE_NEVER:
 	case STORAGE_OPAQUE:
 	case STORAGE_VALIST:
 		assert(0); // Invariant
@@ -300,8 +301,10 @@ emit_type(const struct type *type, FILE *out)
 	case STORAGE_UNION:
 		emit_struct(type, out);
 		break;
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
-		xfprintf(out, "fn(");
+		xfprintf(out, "%s(",
+			type->storage == STORAGE_CLOSURE ? "closure" : "fn");
 		for (const struct type_func_param *param = type->func.params;
 				param; param = param->next) {
 			if (param->next) {

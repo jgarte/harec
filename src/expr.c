@@ -88,6 +88,7 @@ expr_hash(const struct expression *expr)
 		break;
 	case STORAGE_NEVER:
 	case STORAGE_OPAQUE:
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_VALIST:
 	case STORAGE_ALIAS: // handled above

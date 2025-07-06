@@ -18,6 +18,7 @@ enum expr_type {
 	EXPR_BREAK,
 	EXPR_CALL,
 	EXPR_CAST,
+	EXPR_CLOSURE,
 	EXPR_COMPOUND,
 	EXPR_CONTINUE,
 	EXPR_DEFER,
@@ -180,6 +181,21 @@ struct call_argument {
 struct expression_call {
 	struct expression *lvalue;
 	struct call_argument *args;
+};
+
+struct capture {
+	const struct scope_object *object;
+	size_t offset;
+};
+
+struct expression_closure {
+	struct scope *scope;
+	const struct scope_object *body;
+	// Total size of the closure object, including function pointer
+	size_t size;
+	// List of captures, sorted by alignment
+	struct capture *captures;
+	size_t ncapture;
 };
 
 struct expression_compound {
@@ -373,6 +389,7 @@ struct expression {
 		struct expression_binding binding;
 		struct expression_call call;
 		struct expression_cast cast;
+		struct expression_closure closure;
 		struct expression_compound compound;
 		struct expression_defer defer;
 		struct expression_delete delete;

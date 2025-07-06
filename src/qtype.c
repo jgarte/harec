@@ -212,6 +212,8 @@ aggregate_lookup(struct gen_context *ctx, const struct type *type)
 	case STORAGE_TAGGED:
 		tagged_qtype(ctx, type, def);
 		break;
+	case STORAGE_CLOSURE:
+		assert(0); // TODO CLOSURE
 	case STORAGE_DONE:
 	case STORAGE_ENUM:
 	case STORAGE_ERROR:
@@ -294,6 +296,7 @@ qtype_lookup(struct gen_context *ctx,
 	case STORAGE_TUPLE:
 	case STORAGE_UNION:
 		return aggregate_lookup(ctx, type);
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 		return ctx->arch.ptr;
 	case STORAGE_VALIST:
@@ -340,6 +343,7 @@ type_is_aggregate(const struct type *type)
 	case STORAGE_UINTPTR:
 	case STORAGE_VOID:
 		return false;
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 		// Special case
 		return false;

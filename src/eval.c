@@ -109,6 +109,7 @@ itrunc(struct context *ctx, const struct type *type, uint64_t val)
 	case STORAGE_ERROR:
 		return val;
 	case STORAGE_BOOL:
+	case STORAGE_CLOSURE:
 	case STORAGE_DONE:
 	case STORAGE_F32:
 	case STORAGE_F64:
@@ -497,6 +498,7 @@ eval_literal(struct context *ctx,
 	case STORAGE_UINTPTR:
 		out->literal.uval = itrunc(ctx, in->result, in->literal.uval);
 		break;
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_NEVER:
 	case STORAGE_OPAQUE:
@@ -676,6 +678,7 @@ eval_cast(struct context *ctx,
 	case STORAGE_ALIAS:
 		assert(0); // Handled above
 	case STORAGE_BOOL:
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_NEVER:
 	case STORAGE_OPAQUE:
@@ -812,6 +815,7 @@ literal_default(struct context *ctx, struct expression *v)
 		}
 		break;
 	case STORAGE_ALIAS:
+	case STORAGE_CLOSURE:
 	case STORAGE_FUNCTION:
 	case STORAGE_NEVER:
 	case STORAGE_OPAQUE:
@@ -1253,6 +1257,7 @@ eval_expr(struct context *ctx,
 	case EXPR_BINDING:
 	case EXPR_BREAK:
 	case EXPR_CALL:
+	case EXPR_CLOSURE:
 	case EXPR_COMPOUND:
 	case EXPR_CONTINUE:
 	case EXPR_DEFER:

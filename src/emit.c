@@ -32,6 +32,9 @@ emit_qtype(const struct qbe_type *type, bool aggr, bool sign, FILE *out)
 			xfprintf(out, "l");
 		}
 		break;
+	case Q__ENV:
+		xfprintf(out, "env");
+		break;
 	case Q__VOID:
 		break; // no-op
 	}
@@ -100,6 +103,7 @@ emit_const(const struct qbe_value *val, FILE *out)
 		break;
 	case Q__VOID:
 	case Q__AGGREGATE:
+	case Q__ENV:
 	case Q__UNION:
 		assert(0); // Invariant
 	}
@@ -208,6 +212,7 @@ emit_func(const struct qbe_def *def, FILE *out)
 		emit_qtype(def->func.returns, true, true, out);
 	}
 	xfprintf(out, " $%s(", def->name);
+
 	const struct qbe_func_param *param = def->func.params;
 	while (param) {
 		emit_qtype(param->type, true, true, out);

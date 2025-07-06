@@ -108,28 +108,85 @@ scope_insert(struct scope *scope, enum object_type otype,
 	scope->next = &obj->lnext;
 
 	// Hash map
-	uint32_t hash = name_hash(FNV1A_INIT, obj->name);
-	struct scope_object **bucket = &scope->buckets[hash % SCOPE_BUCKETS];
-	if (*bucket) {
-		obj->mnext = *bucket;
+	if (name) {
+		uint32_t hash = name_hash(FNV1A_INIT, obj->name);
+		struct scope_object **bucket = &scope->buckets[hash % SCOPE_BUCKETS];
+		if (*bucket) {
+			obj->mnext = *bucket;
+		}
+		*bucket = obj;
 	}
-	*bucket = obj;
 	return obj;
+}
+
+struct lookup_context {
+	uint32_t hash;
+	struct scope_capture **captures;
+	struct lookup_context *next;
+};
+
+static void
+add_capture(struct lookup_context *ctx, struct scope_object *object) {
+	for (; ctx; ctx = ctx->next) {
+		if (!ctx->captures) {
+			continue;
+		}
+		struct scope_capture *capture = xcalloc(1, sizeof(struct scope_capture));
+		capture->object = object;
+		capture->next = *ctx->captures;
+		*ctx->captures = capture;
+	}
+}
+
+struct scope_object *
+_scope_lookup(struct lookup_context *ctx,
+	struct scope *scope,
+	struct ident *ident)
+{
+	struct scope_object *bucket = scope->buckets[ctx->hash % SCOPE_BUCKETS];
+	while (bucket) {
+		if (bucket->name == ident) {
+			if (ctx->captures) {
+				add_capture(ctx, bucket);
+			}
+			return bucket;
+		}
+		bucket = bucket->mnext;
+	}
+
+	if (!scope->parent) {
+		return NULL;
+	}
+
+	struct lookup_context next_ctx = { .hash = ctx->hash };
+	switch (scope->class) {
+	case SCOPE_CLOSURE:
+		// When traversing a closure, add its captures to the context
+		next_ctx.hash = ctx->hash;
+		next_ctx.next = ctx;
+		next_ctx.captures = scope->captures;
+		ctx = &next_ctx;
+		break;
+	case SCOPE_FUNC:
+		// When traversing a function scope, all object references that
+		// can be resolved beyond this point have global lifetimes, so
+		// we can get rid of the capture lists if we started in a
+		// closure.
+		ctx = &next_ctx;
+		break;
+	default:
+		break; // no-op
+	}
+
+	return _scope_lookup(ctx, scope->parent, ident);
 }
 
 struct scope_object *
 scope_lookup(struct scope *scope, struct ident *ident)
 {
 	uint32_t hash = name_hash(FNV1A_INIT, ident);
-	struct scope_object *bucket = scope->buckets[hash % SCOPE_BUCKETS];
-	while (bucket) {
-		if (bucket->name == ident) {
-			return bucket;
-		}
-		bucket = bucket->mnext;
-	}
-	if (scope->parent) {
-		return scope_lookup(scope->parent, ident);
-	}
-	return NULL;
+	struct lookup_context ctx = {
+		.hash = hash,
+	};
+	return _scope_lookup(&ctx, scope, ident);
 }
