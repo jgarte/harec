@@ -2041,11 +2041,11 @@ gen_expr_literal(struct gen_context *ctx, const struct expression *expr)
 		val.lval = expr->literal.uval;
 		return val;
 	case Q_SINGLE:
-		pushc(ctx->current, "%f", (float)expr->literal.fval);
+		pushc(ctx->current, "0.0"); // XXX SORTIX
 		val.sval = (float)expr->literal.fval;
 		return val;
 	case Q_DOUBLE:
-		pushc(ctx->current, "%f", expr->literal.fval);
+		pushc(ctx->current, "0.0"); // XXX SORTIX
 		val.dval = expr->literal.fval;
 		return val;
 	case Q__VOID:

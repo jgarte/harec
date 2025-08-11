@@ -74,7 +74,8 @@ emit_literal(const struct expression *expr, FILE *out)
 			xfprintf(out, "%s1.0%s / 0.0%s",
 				(val->fval > 0) ? "" : "-", suffix, suffix);
 		} else {
-			xfprintf(out, "%a%s", val->fval, suffix);
+			// XXX SORTIX
+			xfprintf(out, "0.0%s"/*, val->fval*/, suffix);
 		}
 		break;
 	case STORAGE_I16:
