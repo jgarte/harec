@@ -113,7 +113,7 @@ struct incomplete_decl {
 	bool in_progress;
 	bool dealias_in_progress;
 	union {
-		struct ast_decl decl;
+		const struct ast_expression *expr;
 		struct incomplete_enum_field *field;
 	};
 };
@@ -143,7 +143,7 @@ struct scope *check(type_store *ts,
 	bool is_test,
 	const char *mainsym,
 	struct ident *mainident,
-	const struct ast_decls *defines,
+	const struct ast_expression_list *defines,
 	const struct ast_unit *aunit,
 	struct unit *unit,
 	struct intern_table *itbl);
@@ -153,7 +153,7 @@ struct scope *check_internal(type_store *ts,
 	bool is_test,
 	const char *mainsym,
 	struct ident *mainident,
-	const struct ast_decls *defines,
+	const struct ast_expression_list *defines,
 	const struct ast_unit *aunit,
 	struct unit *unit,
 	struct intern_table *itbl,

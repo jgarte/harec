@@ -1491,11 +1491,11 @@ check_expr_binding(struct context *ctx,
 	if (abinding->names.next != NULL) {
 		if (!create_unpack_bindings(ctx, type,
 				abinding->initializer->loc, &abinding->names,
-				abinding->is_static, binding)) {
+				abinding->attrs.is_static, binding)) {
 			mkerror(expr);
 		}
 	} else if (abinding->names.name != NULL) {
-		if (abinding->is_static) {
+		if (abinding->attrs.is_static) {
 			// Generate a static declaration ident
 			binding->object = scope_insert(ctx->scope, O_DECL,
 				intern_generated(ctx, "static.%d"),
@@ -1530,7 +1530,7 @@ check_expr_binding(struct context *ctx,
 	}
 	binding->initializer = lower_implicit_cast(ctx, type, initializer);
 
-	if (abinding->is_static) {
+	if (abinding->attrs.is_static) {
 		struct expression *value =
 			xcalloc(1, sizeof(struct expression));
 		if (!eval_expr(ctx, binding->initializer, value)) {
@@ -2304,7 +2304,9 @@ check_expr_for_each(struct context *ctx,
 	}
 	if (abinding->names.next != NULL) {
 		if (!create_unpack_bindings(ctx, var_type, initializer->loc,
-				&abinding->names, abinding->is_static, &binding->binding)) {
+				&abinding->names,
+				abinding->attrs.is_static,
+				&binding->binding)) {
 			mkerror(binding);
 		
 		};
@@ -3812,6 +3814,10 @@ check_expression(struct context *ctx,
 	case EXPR_COMPOUND:
 		check_expr_compound(ctx, aexpr, expr, hint);
 		break;
+	case EXPR_DECL_TYPE:
+		assert(0); // TODO
+	case EXPR_DECL_FN:
+		assert(0); // TODO
 	case EXPR_LITERAL:
 		check_expr_literal(ctx, aexpr, expr, hint);
 		break;
@@ -3904,9 +3910,9 @@ resolve_unresolved(struct context *ctx)
 static void
 check_function(struct context *ctx,
 	const struct scope_object *obj,
-	const struct ast_decl *adecl)
+	const struct ast_expression *expr)
 {
-	const struct ast_function_decl *afndecl = &adecl->function;
+	const struct ast_decl_func *afndecl = &expr->decl_func;
 	ctx->fntype = obj->type;
 	if (ctx->fntype->storage == STORAGE_INVALID) {
 		return;
@@ -3915,16 +3921,15 @@ check_function(struct context *ctx,
 	struct declaration _decl, *decl = &_decl;
 	decl->decl_type = DECL_FUNC;
 	decl->func.type = obj->type;
-	decl->func.flags = afndecl->flags;
-	decl->exported = adecl->exported;
-	decl->file = adecl->loc.file;
-
+	decl->func.flags = afndecl->attrs.flags;
+	decl->exported = afndecl->attrs.is_exported;
+	decl->file = expr->loc.file;
 	decl->symbol = ident_to_sym(ctx->itbl, obj->ident);
 	decl->ident = mkident(ctx, afndecl->ident, NULL);
 
-	if (!adecl->function.body) {
+	if (!afndecl->body) {
 		if (decl->func.flags != 0) {
-			error(ctx, adecl->loc, NULL,
+			error(ctx, expr->loc, NULL,
 				"Function attributes cannot be used on prototypes");
 			return;
 		}
@@ -3963,15 +3968,15 @@ check_function(struct context *ctx,
 			assert(0); // unreachable
 		}
 		if (obj->type->func.result != &builtin_type_void) {
-			error(ctx, adecl->loc, NULL, "%s function must return void", flag);
+			error(ctx, expr->loc, NULL, "%s function must return void", flag);
 		}
 		if (decl->exported) {
-			error(ctx, adecl->loc, NULL, "%s function cannot be exported", flag);
+			error(ctx, expr->loc, NULL, "%s function cannot be exported", flag);
 		}
 		if (afndecl->prototype.params) {
-			error(ctx, adecl->loc, NULL, "%s function cannot have parameters", flag);
+			error(ctx, expr->loc, NULL, "%s function cannot have parameters", flag);
 		} else if (obj->type->func.variadism != VARIADISM_NONE) {
-			error(ctx, adecl->loc, NULL, "%s function cannot be variadic", flag);
+			error(ctx, expr->loc, NULL, "%s function cannot be variadic", flag);
 		}
 	}
 
@@ -4004,7 +4009,7 @@ check_function(struct context *ctx,
 	scope_pop(&ctx->scope);
 	ctx->fntype = NULL;
 end:
-	if ((adecl->function.flags & FN_TEST) && !ctx->is_test) {
+	if ((afndecl->attrs.flags & FN_TEST) && !ctx->is_test) {
 		return;
 	}
 	append_decl(ctx, decl);
@@ -4059,7 +4064,7 @@ scan_enum_field(struct context *ctx, struct scope *imports,
 static void
 check_hosted_main(struct context *ctx,
 	struct location loc,
-	const struct ast_decl *decl,
+	const struct ast_expression *decl,
 	struct ident *ident,
 	const char *symbol)
 {
@@ -4070,10 +4075,10 @@ check_hosted_main(struct context *ctx,
 		return;
 	}
 
-	const struct ast_function_decl *func;
-	if (decl && decl->decl_type == ADECL_FUNC) {
-		func = &decl->function;
-		if (func->flags != 0) {
+	const struct ast_decl_func *func;
+	if (decl && decl->type == EXPR_DECL_FN) {
+		func = &decl->decl_func;
+		if (func->attrs.flags != 0) {
 			return;
 		}
 	} else {
@@ -4082,7 +4087,7 @@ check_hosted_main(struct context *ctx,
 		return;
 	}
 
-	if (func->body != NULL && !decl->exported) {
+	if (func->body != NULL && !func->attrs.is_exported) {
 		error(ctx, loc, NULL,
 			"main must be exported in hosted environment");
 		return;
@@ -4101,46 +4106,6 @@ check_hosted_main(struct context *ctx,
 		error(ctx, loc, NULL,
 			"main must return void in hosted environment");
 		return;
-	}
-}
-
-static void
-scan_types(struct context *ctx, struct scope *imp, const struct ast_decl *decl)
-{
-	const struct ast_type_decl *t = &decl->type;
-	struct ident *with_ns = mkident(ctx,  t->ident, NULL);
-	check_hosted_main(ctx, decl->loc, NULL, with_ns, NULL);
-	struct scope_object *obj = incomplete_decl_create(ctx,
-			decl->loc, ctx->scope, with_ns, t->ident);
-	obj->idecl->decl = (struct ast_decl){
-		.decl_type = ADECL_TYPE,
-		.loc = decl->loc,
-		.type = *t,
-		.exported = decl->exported,
-	};
-	obj->idecl->imports = imp;
-	if (t->type->storage == STORAGE_ENUM) {
-		bool exported = obj->idecl->decl.exported;
-		const struct type *type = type_store_lookup_enum(
-				ctx, t->type, exported);
-		if (type->storage == STORAGE_INVALID) {
-			return; // error occured
-		}
-		scope_push((struct scope **)&type->_enum.values, SCOPE_ENUM);
-		scan_enum_field(ctx, imp,
-			type->_enum.values, type, t->type->_enum.values);
-		type->_enum.values->parent = ctx->defines;
-		obj->otype = O_TYPE;
-		obj->type = type;
-		append_decl(ctx, &(struct declaration){
-			.decl_type = DECL_TYPE,
-			.file = decl->loc.file,
-			.ident = obj->ident,
-			.exported = exported,
-			.type = type,
-		});
-	} else {
-		obj->idecl->type = IDECL_DECL;
 	}
 }
 
@@ -4585,46 +4550,6 @@ lookup_enum_type(struct context *ctx, const struct scope_object *obj)
 	return enum_type;
 }
 
-static void
-scan_enum_field_aliases(struct context *ctx, struct scope_object *obj)
-{
-	const struct type *enum_type = lookup_enum_type(ctx, obj);
-
-	if (!enum_type) {
-		return;
-	}
-
-	// orig->type is (perhaps transitively) an alias of a resolved enum
-	// type, which means its dependency graph is a linear chain of
-	// resolved types ending with that enum, so we can immediately resolve it
-	wrap_resolver(ctx, obj, resolve_type);
-
-	for (const struct scope_object *val = enum_type->_enum.values->objects;
-			val; val = val->lnext) {
-		struct ast_enum_field *afield =
-			xcalloc(1, sizeof(struct ast_enum_field));
-		*afield = (struct ast_enum_field){
-			.loc = (struct location){0}, // XXX: what to put here?
-			.name = (struct ident *)val->name,
-		};
-
-		struct incomplete_enum_field *field =
-			xcalloc(1, sizeof(struct incomplete_enum_field));
-		*field = (struct incomplete_enum_field){
-			.field = afield,
-			.enum_scope = val->idecl->field->enum_scope,
-		};
-
-		struct ident *name =
-			intern_ident(ctx->itbl, val->name->name, obj->name);
-		struct scope_object *new = incomplete_decl_create(ctx,
-				(struct location){0}, ctx->scope, name, name);
-		new->idecl->type = IDECL_ENUM_FLD;
-		new->type = obj->type;
-		new->idecl->field = field;
-	}
-}
-
 void
 resolve_dimensions(struct context *ctx, struct scope_object *obj)
 {
@@ -4701,96 +4626,6 @@ resolve_type(struct context *ctx, struct scope_object *obj)
 		.exported = obj->idecl->decl.exported,
 		.type = alias,
 	});
-}
-
-static struct scope_object *
-scan_const(struct context *ctx, struct scope *imports, bool exported,
-		struct location loc, const struct ast_global_decl *decl)
-{
-	struct ident *with_ns = mkident(ctx, decl->ident, NULL);
-	check_hosted_main(ctx, loc, NULL, with_ns, NULL);
-	struct scope_object *obj = incomplete_decl_create(ctx, loc,
-				ctx->scope, with_ns, decl->ident);
-	obj->idecl->type = IDECL_DECL;
-	obj->idecl->decl = (struct ast_decl){
-		.decl_type = ADECL_CONST,
-		.loc = loc,
-		.constant = *decl,
-		.exported = exported,
-	};
-	obj->idecl->imports = imports;
-	return obj;
-}
-
-static void
-scan_decl(struct context *ctx, struct scope *imports, const struct ast_decl *decl)
-{
-	struct scope_object *obj;
-	struct ident *ident;
-	switch (decl->decl_type) {
-	case ADECL_CONST:
-		scan_const(ctx, imports, decl->exported, decl->loc, &decl->constant);
-		break;
-	case ADECL_GLOBAL:
-		ident = mkident(ctx, decl->global.ident, decl->global.symbol);
-		check_hosted_main(ctx, decl->loc, NULL, ident, decl->global.symbol);
-		obj = incomplete_decl_create(ctx, decl->loc,
-			ctx->scope, ident, decl->global.ident);
-		obj->idecl->type = IDECL_DECL;
-		obj->idecl->decl = (struct ast_decl){
-			.decl_type = ADECL_GLOBAL,
-			.loc = decl->loc,
-			.global = decl->global,
-			.exported = decl->exported,
-		};
-		obj->idecl->imports = imports;
-		break;
-	case ADECL_FUNC:;
-		const struct ast_function_decl *func = &decl->function;
-		struct ident *name;
-		if (func->flags) {
-			const char *template = NULL;
-			if (func->flags & FN_TEST) {
-				template = "testfunc.%d";
-			} else if (func->flags & FN_INIT) {
-				template = "initfunc.%d";
-			} else if (func->flags & FN_FINI) {
-				template = "finifunc.%d";
-			}
-			assert(template);
-			ident = name = intern_generated(ctx, template);
-		} else {
-			ident = mkident(ctx, func->ident, func->symbol);
-			name = func->ident;
-		}
-		obj = incomplete_decl_create(ctx, decl->loc,
-			ctx->scope, ident, name);
-		check_hosted_main(ctx, decl->loc, decl, ident, func->symbol);
-		obj->idecl->type = IDECL_DECL;
-		obj->idecl->decl = (struct ast_decl){
-			.decl_type = ADECL_FUNC,
-			.loc = decl->loc,
-			.function = *func,
-			.exported = decl->exported,
-		};
-		obj->idecl->imports = imports;
-		break;
-	case ADECL_TYPE:
-		scan_types(ctx, imports, decl);
-		break;
-	case ADECL_ASSERT:;
-		struct ident *id = intern_generated(ctx, "static_assert.%d");
-		obj = incomplete_decl_create(ctx, decl->loc, ctx->scope, id, id);
-		obj->idecl->type = IDECL_DECL;
-		obj->idecl->decl = (struct ast_decl){
-			.decl_type = ADECL_ASSERT,
-			.loc = decl->loc,
-			.assert = decl->assert,
-			.exported = decl->exported,
-		};
-		obj->idecl->imports = imports;
-		break;
-	}
 }
 
 static void
@@ -4871,7 +4706,7 @@ wrap_resolver(struct context *ctx, struct scope_object *obj, resolvefn resolver)
 }
 
 static void
-load_import(struct context *ctx, const struct ast_decls *defines,
+load_import(struct context *ctx, const struct ast_expression_list *defines,
 	struct ast_imports *import, struct scope *scope)
 {
 	struct scope *mod = module_resolve(ctx, defines, import->ident);
@@ -4968,6 +4803,16 @@ load_import(struct context *ctx, const struct ast_decls *defines,
 	}
 }
 
+static void
+eval_subunit(struct context *ctx, struct scope *scope, struct ast_subunit *su)
+{
+	struct ast_expression_list *exprs;
+	for (exprs = su->body; exprs != NULL; exprs = exprs->next) {
+		struct expression expr = {0};
+		check_expression(ctx, exprs->expr, &expr, NULL);
+	}
+}
+
 static const struct location defineloc = {
 	.file = 0,
 	.lineno = 1,
@@ -4980,7 +4825,7 @@ check_internal(type_store *ts,
 	bool is_test,
 	const char *mainsym,
 	struct ident *mainident,
-	const struct ast_decls *defines,
+	const struct ast_expression_list *defines,
 	const struct ast_unit *aunit,
 	struct unit *unit,
 	struct intern_table *itbl,
@@ -5009,13 +4854,14 @@ check_internal(type_store *ts,
 	sources[0] = "-D";
 	ctx.scope = NULL;
 	ctx.unit = scope_push(&ctx.scope, SCOPE_DEFINES);
-	for (const struct ast_decls *def = defines; def; def = def->next) {
-		const struct ast_decl *decl = &def->decl;
-		assert(decl->decl_type == ADECL_CONST);
-		struct scope_object *obj =
-			scan_const(&ctx, NULL, false, defineloc, &decl->constant);
-		resolve_const(&ctx, obj);
-	}
+	// TODO: Re-introduce me
+	//for (const struct ast_expression *def = defines; def; def = def->next) {
+	//	const struct ast_decl *decl = &def->decl;
+	//	assert(decl->decl_type == ADECL_CONST);
+	//	struct scope_object *obj =
+	//		scan_const(&ctx, NULL, false, defineloc, &decl->constant);
+	//	resolve_const(&ctx, obj);
+	//}
 	ctx.defines = ctx.scope;
 	ctx.scope = NULL;
 	ctx.defines->parent = ctx.unit = scope_push(&ctx.scope, SCOPE_UNIT);
@@ -5053,9 +4899,9 @@ check_internal(type_store *ts,
 			}
 		}
 
-		for (struct ast_decls *d = su->decls; d; d = d->next) {
-			scan_decl(&ctx, su_scope, &d->decl);
-		}
+		ctx.subunit = su_scope;
+		eval_expr_list(&ctx, &su->body);
+		ctx.subunit = NULL;
 
 		*next = xcalloc(1, sizeof(struct scopes));
 		(*next)->scope = su_scope;
@@ -5119,7 +4965,7 @@ check(type_store *ts,
 	bool is_test,
 	const char *mainsym,
 	struct ident *mainident,
-	const struct ast_decls *defines,
+	const struct ast_expression_list *defines,
 	const struct ast_unit *aunit,
 	struct unit *unit,
 	struct intern_table *itbl)

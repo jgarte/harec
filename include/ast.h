@@ -9,6 +9,20 @@
 
 struct ast_type;
 
+enum func_decl_flags {
+	FN_FINI = 1 << 0,
+	FN_INIT = 1 << 1,
+	FN_TEST = 1 << 2,
+};
+
+struct ast_attributes {
+	bool is_exported;
+	bool is_threadlocal;
+	bool is_static;
+	enum func_decl_flags flags;
+	const char *symbol;
+};
+
 enum ast_import_mode {
 	IMPORT_NORMAL,   // use foo::bar;
 	IMPORT_ALIAS,    // use foo = bar::baz;
@@ -125,6 +139,19 @@ struct ast_expression_list {
 	struct ast_expression_list *next;
 };
 
+struct ast_decl_type {
+	struct ident *ident;
+	struct ast_type *type;
+	struct ast_attributes attrs;
+};
+
+struct ast_decl_func {
+	struct ident *ident;
+	struct ast_function_type prototype;
+	struct ast_expression *body;
+	struct ast_attributes attrs;
+};
+
 struct ast_expression_access {
 	enum access_type type;
 	union {
@@ -184,8 +211,8 @@ struct ast_expression_binding {
 	// otherwise it's a regular binding
 	struct ast_binding_names names;
 	struct ast_type *type;
-	bool is_static;
 	struct ast_expression *initializer;
+	struct ast_attributes attrs;
 };
 
 struct ast_expression_call {
@@ -352,6 +379,8 @@ struct ast_expression {
 	struct location loc;
 	enum expr_type type;
 	union {
+		struct ast_decl_func decl_func;
+		struct ast_decl_type decl_type;
 		struct ast_expression_access access;
 		struct ast_expression_alloc alloc;
 		struct ast_expression_append append; // also insert
@@ -381,62 +410,9 @@ struct ast_expression {
 	};
 };
 
-struct ast_global_decl {
-	const char *symbol;
-	bool threadlocal;
-	struct ident *ident;
-	struct ast_type *type;
-	struct ast_expression *init;
-};
-
-struct ast_type_decl {
-	struct ident *ident;
-	struct ast_type *type;
-};
-
-enum func_decl_flags {
-	FN_FINI = 1 << 0,
-	FN_INIT = 1 << 1,
-	FN_TEST = 1 << 2,
-};
-
-struct ast_function_decl {
-	const char *symbol;
-	struct ident *ident;
-	struct ast_function_type prototype;
-	struct ast_expression *body;
-	enum func_decl_flags flags;
-};
-
-enum ast_decl_type {
-	ADECL_FUNC,
-	ADECL_TYPE,
-	ADECL_GLOBAL,
-	ADECL_CONST,
-	ADECL_ASSERT,
-};
-
-struct ast_decl {
-	struct location loc;
-	enum ast_decl_type decl_type;
-	bool exported;
-	union {
-		struct ast_global_decl global;
-		struct ast_global_decl constant;
-		struct ast_type_decl type;
-		struct ast_function_decl function;
-		struct ast_expression_assert assert;
-	};
-};
-
-struct ast_decls {
-	struct ast_decl decl;
-	struct ast_decls *next;
-};
-
 struct ast_subunit {
 	struct ast_imports *imports;
-	struct ast_decls *decls;
+	struct ast_expression_list body;
 	struct ast_subunit *next;
 };
 

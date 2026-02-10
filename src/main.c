@@ -35,12 +35,12 @@ usage(const char *argv_0)
 		"-v: print version and exit\n");
 }
 
-static struct ast_decls *
+static struct ast_expression *
 parse_define(const char *argv_0, const char *in, struct intern_table *itbl)
 {
-	struct ast_decls *decls = xcalloc(1, sizeof(struct ast_decls));
-	decls->decl.decl_type = ADECL_CONST;
-	struct ast_global_decl *def = &decls->decl.constant;
+	struct ast_expression *expr = xcalloc(1, sizeof(struct ast_expression));
+	expr->type = EXPR_DEFINE;
+	struct ast_expression_binding *bind = &expr->binding;
 
 	struct token tok;
 	struct lexer lexer;
@@ -53,12 +53,12 @@ parse_define(const char *argv_0, const char *in, struct intern_table *itbl)
 	sources = &d;
 	lex_init(&lexer, f, 0, itbl);
 
-	decls->decl.loc = lexer.loc;
+	expr->loc = lexer.loc;
 
-	def->ident = parse_identifier(&lexer, NULL, NULL);
-	def->type = NULL;
+	bind->names.name = parse_identifier(&lexer, NULL, NULL);
+	bind->type = NULL;
 	if (lex(&lexer, &tok) == T_COLON) {
-		def->type = parse_binding_type(&lexer);
+		bind->type = parse_binding_type(&lexer);
 		lex(&lexer, &tok);
 	}
 
@@ -67,11 +67,11 @@ parse_define(const char *argv_0, const char *in, struct intern_table *itbl)
 		usage(argv_0);
 		exit(EXIT_USER);
 	}
-	def->init = parse_expression(&lexer);
+	bind->initializer = parse_expression(&lexer);
 
 	lex_finish(&lexer);
 
-	return decls;
+	return expr;
 }
 
 int
@@ -83,12 +83,15 @@ main(int argc, char *argv[])
 	bool is_test = false;
 	struct unit unit = {0};
 	struct lexer lexer;
-	struct ast_decls *defines = NULL, **next_def = &defines;
-	struct intern_table itbl;
 
+	struct intern_table itbl;
 	intern_init(&itbl);
+
 	const char *mainsym = intern_copy(&itbl, "main");
 	struct ident *mainident = intern_name(&itbl, mainsym);
+
+	struct ast_expression_list *def, *defines = NULL;
+	struct ast_expression_list **next_def = &def;
 
 	int c;
 	while ((c = getopt(argc, argv, "a:D:hM:m:N:o:Tt:v")) != -1) {
@@ -97,8 +100,12 @@ main(int argc, char *argv[])
 			targetstr = optarg;
 			break;
 		case 'D':
-			*next_def = parse_define(argv[0], optarg, &itbl);
-			next_def = &(*next_def)->next;
+			def = *next_def = xcalloc(1, sizeof(struct ast_expression_list));
+			def->expr = parse_define(argv[0], optarg, &itbl);
+			next_def = &def->next;
+			if (defines == NULL) {
+				defines = def;
+			}
 			break;
 		case 'h':
 			usage(argv[0]);

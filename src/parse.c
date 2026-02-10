@@ -415,8 +415,8 @@ parse_primitive_type(struct lexer *lexer)
 
 static void parse_binding_unpack(struct lexer *lexer,
 	 struct ast_binding_names *next);
-static struct ast_expression *parse_binding(
-		struct lexer *lexer, bool is_static);
+static struct ast_expression *parse_binding(struct lexer *lexer,
+	const struct ast_attributes *attrs);
 static struct ast_expression *parse_object_selector(struct lexer *lexer);
 
 static struct ast_type *
@@ -1368,13 +1368,16 @@ static struct ast_expression *
 parse_static_expression(struct lexer *lexer, bool allowbinding)
 {
 	struct token tok = {0};
+	struct ast_attributes attrs = {
+		.is_static = true,
+	};
 	switch (lex(lexer, &tok)) {
 	case T_LET:
 	case T_CONST:
 		synassert(allowbinding, &tok, T_ABORT, T_ASSERT, T_APPEND,
 			T_INSERT, T_DELETE, T_EOF);
 		unlex(lexer, &tok);
-		return parse_binding(lexer, true);
+		return parse_binding(lexer, &attrs);
 	case T_ABORT:
 	case T_ASSERT:
 		unlex(lexer, &tok);
@@ -2160,7 +2163,7 @@ parse_binding_unpack(struct lexer *lexer, struct ast_binding_names *next)
 }
 
 static struct ast_expression *
-parse_binding(struct lexer *lexer, bool is_static)
+parse_binding(struct lexer *lexer, const struct ast_attributes *attrs)
 {
 	struct ast_expression *exp = mkexpr(lexer->loc);
 
@@ -2178,11 +2181,12 @@ parse_binding(struct lexer *lexer, bool is_static)
 	}
 
 	struct ast_expression_binding *binding = &exp->binding;
+	binding->attrs = *attrs;
 
 	switch (lex(lexer, &tok)) {
 	case T_NAME:
-		binding->names.name =
-			intern_name(lexer->itbl, tok.name);
+		unlex(lexer, &tok);
+		binding->names.name = parse_identifier(lexer, NULL, NULL);
 		break;
 	case T_UNDERSCORE:
 		if (exp->type != EXPR_BINDING) {
@@ -2198,7 +2202,6 @@ parse_binding(struct lexer *lexer, bool is_static)
 	default:
 		synerr(&tok, T_NAME, T_UNDERSCORE, T_LPAREN, T_EOF);
 	}
-	binding->is_static = is_static;
 
 	if (lex(lexer, &tok) == T_COLON) {
 		binding->type = parse_binding_type(lexer);
@@ -2439,26 +2442,6 @@ parse_initializer(struct lexer *lexer)
 	return parse_expression(lexer);
 }
 
-static struct ast_expression *
-parse_statement(struct lexer *lexer)
-{
-	struct token tok;
-	switch (lex(lexer, &tok)) {
-	case T_LET:
-	case T_CONST:
-	case T_DEF:
-		unlex(lexer, &tok);
-		return parse_binding(lexer, false);
-	case T_STATIC:
-		return parse_static_expression(lexer, true);
-	case T_DEFER:
-		return parse_deferred_expression(lexer);
-	default:
-		unlex(lexer, &tok);
-		return parse_expression(lexer);
-	}
-}
-
 static const char *
 parse_attr_symbol(struct lexer *lexer)
 {
@@ -2485,44 +2468,19 @@ parse_attr_symbol(struct lexer *lexer)
 }
 
 static void
-parse_global_decl(struct lexer *lexer, enum lexical_token mode,
-		struct ast_global_decl *decl)
+parse_decl_type(struct lexer *lexer, struct ast_decl_type *decl)
 {
-	struct token tok = {0};
-	assert(mode == T_LET || mode == T_CONST || mode == T_DEF);
 	decl->ident = parse_identifier(lexer, NULL, NULL);
-	switch (lex(lexer, &tok)) {
-	case T_COLON:
-		decl->type = parse_binding_type(lexer);
-		if (lex(lexer, &tok) != T_EQUAL) {
-			synassert(mode != T_DEF, &tok, T_EQUAL, T_EOF);
-			unlex(lexer, &tok);
-			break;
-		}
-		/* fallthrough */
-	case T_EQUAL:
-		decl->init = parse_initializer(lexer);
-		break;
-	default:
-		synerr(&tok, T_EQUAL, T_COLON, T_EOF);
-	}
-}
-
-static void
-parse_type_decl(struct lexer *lexer, struct ast_type_decl *decl)
-{
-	struct ast_type_decl *i = decl;
-	i->ident = parse_identifier(lexer, NULL, NULL);
 	want(lexer, T_EQUAL, NULL);
 	if (try(lexer, T_ENUM)) {
-		i->type = parse_enum_type(i->ident, lexer);
+		decl->type = parse_enum_type(decl->ident, lexer);
 	} else {
-		i->type = parse_type(lexer);
+		decl->type = parse_type(lexer);
 	}
 }
 
 static void
-parse_fn_decl(struct lexer *lexer, struct ast_function_decl *decl)
+parse_decl_func(struct lexer *lexer, struct ast_decl_func *decl)
 {
 	struct token tok = {0};
 	decl->ident = parse_identifier(lexer, NULL, NULL);
@@ -2541,32 +2499,35 @@ parse_fn_decl(struct lexer *lexer, struct ast_function_decl *decl)
 	}
 }
 
-static void
-parse_decl(struct lexer *lexer, struct ast_decl *decl)
+static struct ast_expression *
+parse_decl(struct lexer *lexer)
 {
 	struct token tok = {0};
-	decl->loc = lexer->loc;
+	struct ast_expression *expr;
+	struct ast_attributes attrs = {0};
 
-	enum func_decl_flags flags = 0;
-	bool threadlocal = false;
-	const char *symbol = NULL;
+	if (lex(lexer, &tok) == T_EXPORT) {
+		attrs.is_exported = true;
+	} else {
+		unlex(lexer, &tok);
+	}
 
 	switch (lex(lexer, &tok)) {
 	case T_ATTR_FINI:
-		flags |= FN_FINI;
+		attrs.flags |= FN_FINI;
 		break;
 	case T_ATTR_INIT:
-		flags |= FN_INIT;
+		attrs.flags |= FN_INIT;
 		break;
 	case T_ATTR_SYMBOL:
-		symbol = parse_attr_symbol(lexer);
-		threadlocal = try(lexer, T_ATTR_THREADLOCAL);
+		attrs.symbol = parse_attr_symbol(lexer);
+		attrs.is_threadlocal = try(lexer, T_ATTR_THREADLOCAL);
 		break;
 	case T_ATTR_TEST:
-		flags |= FN_TEST;
+		attrs.flags |= FN_TEST;
 		break;
 	case T_ATTR_THREADLOCAL:
-		threadlocal = true;
+		attrs.is_threadlocal = true;
 		break;
 	default:
 		unlex(lexer, &tok);
@@ -2576,75 +2537,103 @@ parse_decl(struct lexer *lexer, struct ast_decl *decl)
 	switch (lex(lexer, &tok)) {
 	case T_CONST:
 	case T_LET:
-		synassert(flags == 0, &tok, T_FN, T_EOF);
-		decl->decl_type = ADECL_GLOBAL;
-		decl->global.threadlocal = threadlocal;
-		decl->global.symbol = symbol;
-		parse_global_decl(lexer, tok.token, &decl->global);
+		synassert(attrs.flags == 0, &tok, T_FN, T_EOF);
+		unlex(lexer, &tok);
+		expr = parse_binding(lexer, &attrs);
 		break;
 	case T_DEF:
-		synassert(flags == 0, &tok, T_FN, T_EOF);
-		synassert(symbol == NULL, &tok, T_CONST, T_LET, T_FN, T_EOF);
-		synassert(!threadlocal, &tok, T_CONST, T_LET, T_EOF);
-		decl->decl_type = ADECL_CONST;
-		parse_global_decl(lexer, tok.token, &decl->constant);
+		synassert(attrs.flags == 0, &tok, T_FN, T_EOF);
+		synassert(attrs.symbol == NULL, &tok, T_CONST, T_LET, T_FN, T_EOF);
+		synassert(!attrs.is_threadlocal, &tok, T_CONST, T_LET, T_EOF);
+		unlex(lexer, &tok);
+		expr = parse_binding(lexer, &attrs);
 		break;
 	case T_TYPE:
-		synassert(flags == 0, &tok, T_FN, T_EOF);
-		synassert(symbol == NULL, &tok, T_CONST, T_LET, T_FN, T_EOF);
-		synassert(!threadlocal, &tok, T_CONST, T_LET, T_EOF);
-		decl->decl_type = ADECL_TYPE;
-		parse_type_decl(lexer, &decl->type);
+		synassert(attrs.flags == 0, &tok, T_FN, T_EOF);
+		synassert(attrs.symbol == NULL, &tok, T_CONST, T_LET, T_FN, T_EOF);
+		synassert(!attrs.is_threadlocal, &tok, T_CONST, T_LET, T_EOF);
+		expr = mkexpr(lexer->loc);
+		expr->decl_type.attrs = attrs;
+		parse_decl_type(lexer, &expr->decl_type);
 		break;
 	case T_FN:
-		synassert(!threadlocal, &tok, T_CONST, T_LET, T_EOF);
-		decl->function.flags = flags;
-		decl->function.symbol = symbol;
-		decl->decl_type = ADECL_FUNC;
-		parse_fn_decl(lexer, &decl->function);
+		synassert(!attrs.is_threadlocal, &tok, T_CONST, T_LET, T_EOF);
+		expr = mkexpr(lexer->loc);
+		expr->decl_func.attrs = attrs;
+		parse_decl_func(lexer, &expr->decl_func);
 		break;
 	default:
 		synerr(&tok, T_CONST, T_LET, T_DEF, T_TYPE, T_FN, T_EOF);
 	}
+
+	return expr;
+}
+
+static struct ast_expression *
+parse_statement(struct lexer *lexer)
+{
+	struct token tok;
+	switch (lex(lexer, &tok)) {
+	case T_EXPORT:
+	case T_FN:
+	case T_TYPE:
+	case T_ATTR_INIT:
+	case T_ATTR_FINI:
+	case T_ATTR_SYMBOL:
+	case T_ATTR_TEST:
+	case T_ATTR_THREADLOCAL:
+		unlex(lexer, &tok);
+		return parse_decl(lexer);
+	default:
+		unlex(lexer, &tok);
+		break;
+	}
+
+	struct ast_attributes attrs = {0};
+	switch (lex(lexer, &tok)) {
+	case T_STATIC:
+		return parse_static_expression(lexer, true);
+	case T_DEFER:
+		return parse_deferred_expression(lexer);
+	case T_LET:
+	case T_CONST:
+	case T_DEF:
+		unlex(lexer, &tok);
+		return parse_binding(lexer, &attrs);
+	default:
+		unlex(lexer, &tok);
+		return parse_expression(lexer);
+	}
 }
 
 static void
-parse_decls(struct lexer *lexer, struct ast_decls **decls)
+parse_subunit(struct lexer *lexer, struct ast_expression_list *exprs)
 {
 	struct token tok = {0};
-	struct ast_decls **next = decls;
-	while (tok.token != T_EOF) {
-		struct ast_decls *decl = *next =
-			xcalloc(1, sizeof(struct ast_decls));
-		switch (lex(lexer, &tok)) {
-		case T_EXPORT:
-			decl->decl.exported = true;
-			break;
-		case T_STATIC:
-			decl->decl.decl_type = ADECL_ASSERT;
-			parse_assertion(lexer, true, &decl->decl.assert);
-			next = &decl->next;
-			want(lexer, T_SEMICOLON, NULL);
-			continue;
-		default:
-			unlex(lexer, &tok);
-			break;
-		}
+	struct ast_expression_list *cur = exprs;
+	struct ast_expression_list **next = &cur->next;
+
+	while (true) {
+		cur->expr = parse_statement(lexer);
+
+		want(lexer, T_SEMICOLON, &tok);
+
+		lex(lexer, &tok);
 		if (tok.token == T_EOF) {
 			break;
-		}
-		parse_decl(lexer, &decl->decl);
-		next = &decl->next;
-		want(lexer, T_SEMICOLON, NULL);
+		} 
+
+		unlex(lexer, &tok);
+		*next = xcalloc(1, sizeof(struct ast_expression_list));
+		cur = *next;
+		next = &cur->next;
 	}
-	free(*next);
-	*next = 0;
 }
 
 void
 parse(struct lexer *lexer, struct ast_subunit *subunit)
 {
 	parse_imports(lexer, subunit);
-	parse_decls(lexer, &subunit->decls);
+	parse_subunit(lexer, &subunit->body);
 	want(lexer, T_EOF, NULL);
 }
