@@ -1388,52 +1388,50 @@ gen_expr_binding_unpack(struct gen_context *ctx,
 static void
 gen_expr_binding(struct gen_context *ctx, const struct expression *expr)
 {
-	for (const struct expression_binding *binding = &expr->binding;
-			binding; binding = binding->next) {
-		if (binding->unpack) {
-			if (binding->unpack->object->otype == O_DECL) {
-				gen_expr_binding_unpack_static(ctx, binding);
-			} else {
-				gen_expr_binding_unpack(ctx, binding);
-			}
-			continue;
-		} else if (binding->object == NULL) {
-			gen_expr(ctx, binding->initializer);
-			continue;
+	const struct expression_binding *binding = &expr->binding;
+	if (binding->unpack) {
+		if (binding->unpack->object->otype == O_DECL) {
+			gen_expr_binding_unpack_static(ctx, binding);
+		} else {
+			gen_expr_binding_unpack(ctx, binding);
 		}
-
-		if (binding->object->otype == O_DECL) {
-			// static binding
-			struct declaration decl = {
-				.decl_type = DECL_GLOBAL,
-				.ident = binding->object->ident,
-				.global = {
-					.type = binding->object->type,
-					.value = binding->initializer,
-				},
-			};
-			gen_global_decl(ctx, &decl);
-			continue;
-		}
-
-		const struct type *type = binding->object->type;
-		if (type->size == 0) {
-			gen_expr(ctx, binding->initializer);
-			continue;
-		}
-
-		struct gen_binding *gb = xcalloc(1, sizeof(struct gen_binding));
-		gb->value = mkgtemp(ctx, type, "binding.%d");
-		gb->object = binding->object;
-		gb->next = ctx->bindings;
-		ctx->bindings = gb;
-
-		struct qbe_value qv = mklval(ctx, &gb->value);
-		struct qbe_value sz = constl(type->size);
-		enum qbe_instr alloc = alloc_for_align(type->align);
-		pushprei(ctx->current, &qv, alloc, &sz, NULL);
-		gen_expr_at(ctx, binding->initializer, gb->value);
+		return;
+	} else if (binding->object == NULL) {
+		gen_expr(ctx, binding->initializer);
+		return;
 	}
+
+	if (binding->object->otype == O_DECL) {
+		// static binding
+		struct declaration decl = {
+			.decl_type = DECL_GLOBAL,
+			.ident = binding->object->ident,
+			.global = {
+				.type = binding->object->type,
+				.value = binding->initializer,
+			},
+		};
+		gen_global_decl(ctx, &decl);
+		return;
+	}
+
+	const struct type *type = binding->object->type;
+	if (type->size == 0) {
+		gen_expr(ctx, binding->initializer);
+		return;
+	}
+
+	struct gen_binding *gb = xcalloc(1, sizeof(struct gen_binding));
+	gb->value = mkgtemp(ctx, type, "binding.%d");
+	gb->object = binding->object;
+	gb->next = ctx->bindings;
+	ctx->bindings = gb;
+
+	struct qbe_value qv = mklval(ctx, &gb->value);
+	struct qbe_value sz = constl(type->size);
+	enum qbe_instr alloc = alloc_for_align(type->align);
+	pushprei(ctx->current, &qv, alloc, &sz, NULL);
+	gen_expr_at(ctx, binding->initializer, gb->value);
 }
 
 static void

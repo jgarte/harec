@@ -64,7 +64,8 @@ export fn malloc(n: size) nullable *opaque = {
 		return &m.user;
 	};
 
-	let bin = size_getbin(n), sz = bin_getsize(bin);
+	let bin = size_getbin(n);
+	let sz = bin_getsize(bin);
 	let m = match (bins[bin]) {
 	case null =>
 		if (cur_chunk.1 + META + sz + META > CHUNKSZ) {

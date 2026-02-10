@@ -1429,90 +1429,28 @@ check_expr_binding(struct context *ctx,
 
 	struct expression_binding *binding = &expr->binding;
 	const struct ast_expression_binding *abinding = &aexpr->binding;
-	while (abinding) {
-		const struct type *type = NULL;
-		if (abinding->type) {
-			type = type_store_lookup_atype(ctx, abinding->type);
-		}
+	const struct type *type = NULL;
+	if (abinding->type) {
+		type = type_store_lookup_atype(ctx, abinding->type);
+	}
 
-		struct expression *initializer =
-			xcalloc(1, sizeof(struct expression));
-		check_expression(ctx, abinding->initializer, initializer, type);
+	struct expression *initializer =
+		xcalloc(1, sizeof(struct expression));
+	check_expression(ctx, abinding->initializer, initializer, type);
 
-		if (abinding->type
-				&& abinding->type->storage == STORAGE_ARRAY
-				&& abinding->type->array.contextual) {
-			const struct type *initarray =
-				type_dealias(ctx, initializer->result);
-			if (initarray->storage == STORAGE_INVALID) {
-				// no-op
-			} else if (initarray->storage != STORAGE_ARRAY) {
-				error(ctx, aexpr->loc, expr,
-					"Cannot infer array length from non-array type");
-				return;
-			} else if (initarray->array.members
-					!= type->array.members) {
-				char *inittype = gen_typename(initializer->result);
-				char *bindingtype = gen_typename(type);
-				error(ctx, aexpr->loc, expr,
-					"Initializer of type %s is not assignable to binding type %s",
-					inittype, bindingtype);
-				free(inittype);
-				free(bindingtype);
-				return;
-			}
-			type = initarray;
-			initializer = lower_implicit_cast(ctx, type, initializer);
-		}
-
-		if (expr->type == EXPR_DEFINE) {
-			if (type) {
-				initializer = lower_implicit_cast(
-					ctx, type, initializer);
-			}
-			struct expression *value =
-				xcalloc(1, sizeof(struct expression));
-			if (!eval_expr(ctx, initializer, value)) {
-				error(ctx, initializer->loc, value,
-					"Unable to evaluate constant initializer at compile time");
-				type = &builtin_type_invalid;
-			}
-			binding->initializer = value;
-			assert(abinding->names.name != NULL);
-			assert(abinding->names.next == NULL);
-			binding->object = scope_insert(ctx->scope, O_CONST,
-				abinding->names.name, abinding->names.name,
-				NULL, value);
-			goto done;
-		}
-		if (!type) {
-			type = initializer->result;
-		}
-		if (abinding->names.next != NULL) {
-			if (!create_unpack_bindings(ctx, type,
-					abinding->initializer->loc, &abinding->names,
-					abinding->is_static, binding)) {
-				mkerror(expr);
-			}
-		} else if (abinding->names.name != NULL) {
-			if (abinding->is_static) {
-				// Generate a static declaration ident
-				binding->object = scope_insert(ctx->scope, O_DECL,
-					intern_generated(ctx, "static.%d"),
-					abinding->names.name, type, NULL);
-			} else {
-				binding->object = scope_insert(ctx->scope, O_BIND,
-					abinding->names.name, abinding->names.name,
-					type, NULL);
-			}
-		}
-
-		if (type->storage == STORAGE_NULL) {
+	if (abinding->type
+			&& abinding->type->storage == STORAGE_ARRAY
+			&& abinding->type->array.contextual) {
+		const struct type *initarray =
+			type_dealias(ctx, initializer->result);
+		if (initarray->storage == STORAGE_INVALID) {
+			// no-op
+		} else if (initarray->storage != STORAGE_ARRAY) {
 			error(ctx, aexpr->loc, expr,
-				"Null is not a valid type for a binding");
+				"Cannot infer array length from non-array type");
 			return;
-		}
-		if (!type_is_assignable(ctx, type, initializer->result)) {
+		} else if (initarray->array.members
+				!= type->array.members) {
 			char *inittype = gen_typename(initializer->result);
 			char *bindingtype = gen_typename(type);
 			error(ctx, aexpr->loc, expr,
@@ -1522,34 +1460,86 @@ check_expr_binding(struct context *ctx,
 			free(bindingtype);
 			return;
 		}
-		type = lower_flexible(ctx, type, NULL);
-		if (type->size == SIZE_UNDEFINED) {
-			error(ctx, aexpr->loc, expr,
-				"Cannot create binding for type of undefined size");
+		type = initarray;
+		initializer = lower_implicit_cast(ctx, type, initializer);
+	}
+
+	if (expr->type == EXPR_DEFINE) {
+		if (type) {
+			initializer = lower_implicit_cast(
+				ctx, type, initializer);
+		}
+		struct expression *value =
+			xcalloc(1, sizeof(struct expression));
+		if (!eval_expr(ctx, initializer, value)) {
+			error(ctx, initializer->loc, value,
+				"Unable to evaluate constant initializer at compile time");
+			type = &builtin_type_invalid;
+		}
+		binding->initializer = value;
+		assert(abinding->names.name != NULL);
+		assert(abinding->names.next == NULL);
+		binding->object = scope_insert(ctx->scope, O_CONST,
+			abinding->names.name, abinding->names.name,
+			NULL, value);
+		return;
+	}
+
+	if (!type) {
+		type = initializer->result;
+	}
+	if (abinding->names.next != NULL) {
+		if (!create_unpack_bindings(ctx, type,
+				abinding->initializer->loc, &abinding->names,
+				abinding->is_static, binding)) {
+			mkerror(expr);
+		}
+	} else if (abinding->names.name != NULL) {
+		if (abinding->is_static) {
+			// Generate a static declaration ident
+			binding->object = scope_insert(ctx->scope, O_DECL,
+				intern_generated(ctx, "static.%d"),
+				abinding->names.name, type, NULL);
+		} else {
+			binding->object = scope_insert(ctx->scope, O_BIND,
+				abinding->names.name, abinding->names.name,
+				type, NULL);
+		}
+	}
+
+	if (type->storage == STORAGE_NULL) {
+		error(ctx, aexpr->loc, expr,
+			"Null is not a valid type for a binding");
+		return;
+	}
+	if (!type_is_assignable(ctx, type, initializer->result)) {
+		char *inittype = gen_typename(initializer->result);
+		char *bindingtype = gen_typename(type);
+		error(ctx, aexpr->loc, expr,
+			"Initializer of type %s is not assignable to binding type %s",
+			inittype, bindingtype);
+		free(inittype);
+		free(bindingtype);
+		return;
+	}
+	type = lower_flexible(ctx, type, NULL);
+	if (type->size == SIZE_UNDEFINED) {
+		error(ctx, aexpr->loc, expr,
+			"Cannot create binding for type of undefined size");
+		return;
+	}
+	binding->initializer = lower_implicit_cast(ctx, type, initializer);
+
+	if (abinding->is_static) {
+		struct expression *value =
+			xcalloc(1, sizeof(struct expression));
+		if (!eval_expr(ctx, binding->initializer, value)) {
+			error(ctx, abinding->initializer->loc, expr,
+				"Unable to evaluate static initializer at compile time");
 			return;
 		}
-		binding->initializer = lower_implicit_cast(ctx, type, initializer);
-
-		if (abinding->is_static) {
-			struct expression *value =
-				xcalloc(1, sizeof(struct expression));
-			if (!eval_expr(ctx, binding->initializer, value)) {
-				error(ctx, abinding->initializer->loc, expr,
-					"Unable to evaluate static initializer at compile time");
-				return;
-			}
-			// TODO: Free initializer
-			binding->initializer = value;
-		}
-
-done:
-		if (abinding->next) {
-			binding->next = xcalloc(1,
-				sizeof(struct expression_binding));
-			binding = binding->next;
-		}
-
-		abinding = abinding->next;
+		// TODO: Free initializer
+		binding->initializer = value;
 	}
 }
 
@@ -2539,10 +2529,6 @@ check_expr_if_let(struct context *ctx,
 	expr->type = EXPR_IF_LET;
 
 	const struct ast_expression_binding *abinding = &aexpr->_if.binding->binding;
-	if (abinding->next) {
-		error(ctx, aexpr->loc, expr, "Cannot have multiple bindings in if (let) expression");
-		return;
-	}
 	if (abinding->names.next) {
 		// TODO: Why not?
 		error(ctx, aexpr->loc, expr, "Cannot unpack if (let) binding as tuple");

@@ -73,7 +73,7 @@ fn local_constants() void = {
 	static assert(main == 42);
 
 	static assert(C == 42);
-	def C = 0, C = 1337;
+	def C = 1337;
 	static assert(C == 1337);
 	{
 		def C = 69;

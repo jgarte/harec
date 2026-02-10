@@ -548,7 +548,8 @@ fn numeric() void = {
 };
 
 fn basics() void = {
-	let b1 = true, b2 = false;
+	let b1 = true;
+	let b2 = false;
 	let p1: nullable *int = null;
 	let r1 = ['x', '\x0A', '\u1234', '\0', '\a', '\b', '\f', '\n', '\r', '\t',
 		'\v', '\\', '\'', '\"', '\U00103456', '\u0080', '\U00000080'];

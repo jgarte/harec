@@ -415,7 +415,7 @@ parse_primitive_type(struct lexer *lexer)
 
 static void parse_binding_unpack(struct lexer *lexer,
 	 struct ast_binding_names *next);
-static struct ast_expression *parse_binding_list(
+static struct ast_expression *parse_binding(
 		struct lexer *lexer, bool is_static);
 static struct ast_expression *parse_object_selector(struct lexer *lexer);
 
@@ -1374,7 +1374,7 @@ parse_static_expression(struct lexer *lexer, bool allowbinding)
 		synassert(allowbinding, &tok, T_ABORT, T_ASSERT, T_APPEND,
 			T_INSERT, T_DELETE, T_EOF);
 		unlex(lexer, &tok);
-		return parse_binding_list(lexer, true);
+		return parse_binding(lexer, true);
 	case T_ABORT:
 	case T_ASSERT:
 		unlex(lexer, &tok);
@@ -1766,7 +1766,7 @@ parse_if_expression(struct lexer *lexer)
 	case T_CONST:
 		unlex(lexer, &tok);
 		exp->type = EXPR_IF_LET;
-		exp->_if.binding = parse_binding_list(lexer, false);
+		exp->_if.binding = parse_binding(lexer, &attrs);
 		break;
 	default:
 		unlex(lexer, &tok);
@@ -1807,61 +1807,55 @@ static void parse_for_predicate(struct lexer *lexer,
 		struct ast_expression_binding *binding = &for_exp->bindings->binding;
 
 		bool for_kind_found = false;
-		while (true) {
+		switch (lex(lexer, &tok)) {
+		case T_NAME:
+			binding->names.name =
+				intern_name(lexer->itbl, tok.name);
+			break;
+		case T_UNDERSCORE:
+			break;
+		case T_LPAREN:
+			parse_binding_unpack(lexer, &binding->names);
+			break;
+		default:
+			synerr(&tok, T_NAME, T_UNDERSCORE,
+				T_LPAREN, T_EOF);
+		}
+
+		if (try(lexer, T_COLON)) {
+			binding->type = parse_type(lexer);
+		}
+
+		if (for_kind_found) {
+			want(lexer, T_EQUAL, &tok);
+		} else {
+			for_kind_found = true;
+
 			switch (lex(lexer, &tok)) {
-			case T_NAME:
-				binding->names.name =
-					intern_name(lexer->itbl, tok.name);
+			case T_DOUBLE_DOT:
+				for_exp->kind = FOR_EACH_VALUE;
 				break;
-			case T_UNDERSCORE:
+			case T_BAND:
+				want(lexer, T_DOUBLE_DOT, &tok);
+				for_exp->kind = FOR_EACH_POINTER;
 				break;
-			case T_LPAREN:
-				parse_binding_unpack(lexer, &binding->names);
+			case T_ARROW:
+				for_exp->kind = FOR_EACH_ITERATOR;
+				break;
+			case T_EQUAL:
+				for_exp->kind = FOR_ACCUMULATOR;
 				break;
 			default:
-				synerr(&tok, T_NAME, T_UNDERSCORE,
-					T_LPAREN, T_EOF);
+				synerr(&tok, T_DOUBLE_DOT, T_BAND,
+					T_ARROW, T_EQUAL, T_EOF);
 			}
-
-			if (try(lexer, T_COLON)) {
-				binding->type = parse_type(lexer);
-			}
-
-			if (for_kind_found) {
-				want(lexer, T_EQUAL, &tok);
-			} else {
-				for_kind_found = true;
-
-				switch (lex(lexer, &tok)) {
-				case T_DOUBLE_DOT:
-					for_exp->kind = FOR_EACH_VALUE;
-					break;
-				case T_BAND:
-					want(lexer, T_DOUBLE_DOT, &tok);
-					for_exp->kind = FOR_EACH_POINTER;
-					break;
-				case T_ARROW:
-					for_exp->kind = FOR_EACH_ITERATOR;
-					break;
-				case T_EQUAL:
-					for_exp->kind = FOR_ACCUMULATOR;
-					break;
-				default:
-					synerr(&tok, T_DOUBLE_DOT, T_BAND,
-						T_ARROW, T_EQUAL, T_EOF);
-				}
-			}
-			binding->initializer = parse_expression(lexer);
-
-			if (for_exp->kind != FOR_ACCUMULATOR) {
-				return;
-			}
-			if (!try(lexer, T_COMMA)) {
-				break;
-			}
-			binding->next = xcalloc(1, sizeof(struct ast_expression_binding));
-			binding = binding->next;
 		}
+		binding->initializer = parse_expression(lexer);
+
+		if (for_exp->kind != FOR_ACCUMULATOR) {
+			return;
+		}
+
 		want(lexer, T_SEMICOLON, &tok);
 
 		for_exp->cond = parse_expression(lexer);
@@ -2166,7 +2160,7 @@ parse_binding_unpack(struct lexer *lexer, struct ast_binding_names *next)
 }
 
 static struct ast_expression *
-parse_binding_list(struct lexer *lexer, bool is_static)
+parse_binding(struct lexer *lexer, bool is_static)
 {
 	struct ast_expression *exp = mkexpr(lexer->loc);
 
@@ -2185,48 +2179,39 @@ parse_binding_list(struct lexer *lexer, bool is_static)
 
 	struct ast_expression_binding *binding = &exp->binding;
 
-	do {
-		switch (lex(lexer, &tok)) {
-		case T_NAME:
-			binding->names.name =
-				intern_name(lexer->itbl, tok.name);
-			break;
-		case T_UNDERSCORE:
-			if (exp->type != EXPR_BINDING) {
-				error(tok.loc, "can't use underscore with def");
-			}
-			break;
-		case T_LPAREN:
-			if (exp->type != EXPR_BINDING) {
-				error(tok.loc, "can't use tuple unpacking to declare constant");
-			}
-			parse_binding_unpack(lexer, &binding->names);
-			break;
-		default:
-			synerr(&tok, T_NAME, T_UNDERSCORE, T_LPAREN, T_EOF);
+	switch (lex(lexer, &tok)) {
+	case T_NAME:
+		binding->names.name =
+			intern_name(lexer->itbl, tok.name);
+		break;
+	case T_UNDERSCORE:
+		if (exp->type != EXPR_BINDING) {
+			error(tok.loc, "can't use underscore with def");
 		}
-		binding->is_static = is_static;
-
-		switch (lex(lexer, &tok)) {
-		case T_COLON:
-			binding->type = parse_binding_type(lexer);
-			want(lexer, T_EQUAL, &tok);
-			break;
-		case T_EQUAL:
-			break;
-		default:
-			synerr(&tok, T_COLON, T_EQUAL, T_EOF);
+		break;
+	case T_LPAREN:
+		if (exp->type != EXPR_BINDING) {
+			error(tok.loc, "can't use tuple unpacking to declare constant");
 		}
+		parse_binding_unpack(lexer, &binding->names);
+		break;
+	default:
+		synerr(&tok, T_NAME, T_UNDERSCORE, T_LPAREN, T_EOF);
+	}
+	binding->is_static = is_static;
 
+	if (lex(lexer, &tok) == T_COLON) {
+		binding->type = parse_binding_type(lexer);
+	} else {
+		unlex(lexer, &tok);
+	}
+
+	if (lex(lexer, &tok) == T_EQUAL) {
 		binding->initializer = parse_initializer(lexer);
+	} else {
+		unlex(lexer, &tok);
+	}
 
-		if (lex(lexer, &tok) == T_COMMA) {
-			binding->next = xcalloc(1, sizeof *binding->next);
-			binding = binding->next;
-		}
-	} while (tok.token == T_COMMA);
-
-	unlex(lexer, &tok);
 	return exp;
 }
 
@@ -2463,7 +2448,7 @@ parse_statement(struct lexer *lexer)
 	case T_CONST:
 	case T_DEF:
 		unlex(lexer, &tok);
-		return parse_binding_list(lexer, false);
+		return parse_binding(lexer, false);
 	case T_STATIC:
 		return parse_static_expression(lexer, true);
 	case T_DEFER:

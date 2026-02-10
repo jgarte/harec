@@ -52,7 +52,8 @@ fn assignment() void = {
 	x.0 = x.1;
 	x.1 = void;
 
-	let (a, b) = (1, 2), (c, d) = (3, 4);
+	let (a, b) = (1, 2);
+	let (c, d) = (3, 4);
 	assert(a == 1 && b == 2 && c == 3 && d == 4);
 };
 
