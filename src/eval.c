@@ -1298,6 +1298,8 @@ eval_expr(struct context *ctx,
 	case EXPR_VAEND:
 	case EXPR_VASTART:
 	case EXPR_YIELD:
+	case EXPR_DECL_FN:
+	case EXPR_DECL_TYPE:
 		return false;
 	}
 	assert(0); // Unreachable

@@ -104,9 +104,9 @@ fn invalid() void = {
 	compile(status::CHECK, "fn test() int; let x: int = test();")!;
 	compile(status::CHECK, "const a: u8 = 2; const b: u8 = a + 5;")!;
 
-	compile(status::PARSE, "def a;")!;
-	compile(status::PARSE, "def a: int;")!;
-	compile(status::PARSE, "let a;")!;
+	compile(status::CHECK, "def a;")!;
+	compile(status::CHECK, "def a: int;")!;
+	compile(status::CHECK, "let a;")!;
 
 	compile(status::CHECK, "def a: [_]str = 0;")!;
 	compile(status::CHECK, "def a: int = \"string\";")!;

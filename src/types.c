@@ -42,8 +42,9 @@ complete_alias(struct context *ctx, struct type *type)
 
 	if (!obj->idecl->dealias_in_progress) {
 		obj->idecl->dealias_in_progress = true;
-		type->alias.type = type_store_lookup_atype(
-			ctx, obj->idecl->decl.type.type);
+		const struct ast_type *atype =
+			obj->idecl->expr->decl_type.type;
+		type->alias.type = type_store_lookup_atype(ctx, atype);
 		obj->idecl->dealias_in_progress = false;
 	}
 	return obj;
@@ -67,7 +68,7 @@ type_dealias(struct context *ctx, const struct type *_type)
 				complete_alias(ctx, type);
 			if (type->alias.type == NULL) {
 				char *identstr = ident_unparse(obj->name);
-				error(ctx, obj->idecl->decl.loc, NULL,
+				error(ctx, obj->idecl->expr->loc, NULL,
 					"Circular dependency for '%s'",
 					identstr);
 				free(identstr);

@@ -1764,6 +1764,7 @@ parse_if_expression(struct lexer *lexer)
 
 	want(lexer, T_LPAREN, &tok);
 
+	struct ast_attributes attrs = {0};
 	switch (lex(lexer, &tok)) {
 	case T_LET:
 	case T_CONST:
@@ -2554,12 +2555,14 @@ parse_decl(struct lexer *lexer)
 		synassert(!attrs.is_threadlocal, &tok, T_CONST, T_LET, T_EOF);
 		expr = mkexpr(lexer->loc);
 		expr->decl_type.attrs = attrs;
+		expr->type = EXPR_DECL_TYPE;
 		parse_decl_type(lexer, &expr->decl_type);
 		break;
 	case T_FN:
 		synassert(!attrs.is_threadlocal, &tok, T_CONST, T_LET, T_EOF);
 		expr = mkexpr(lexer->loc);
 		expr->decl_func.attrs = attrs;
+		expr->type = EXPR_DECL_FN;
 		parse_decl_func(lexer, &expr->decl_func);
 		break;
 	default:

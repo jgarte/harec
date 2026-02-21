@@ -31,6 +31,7 @@ struct context {
 	const struct type *fntype;
 	struct ident *ns;
 	struct scope *unit;
+	struct scope *subunit;
 	struct scope *scope;
 	struct scope *defines;
 	const char *mainsym;

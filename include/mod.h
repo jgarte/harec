@@ -6,6 +6,6 @@ struct context;
 struct ident;
 
 struct scope *module_resolve(struct context *ctx,
-	const struct ast_decls *defines, struct ident *ident);
+	const struct ast_expression_list *defines, struct ident *ident);
 
 #endif

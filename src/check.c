@@ -171,6 +171,9 @@ lower_implicit_cast(struct context *ctx,
 }
 
 static void resolve_decl(struct context *ctx, struct scope_object *obj);
+static struct scope_object *incomplete_decl_create(struct context *ctx,
+	struct location loc, struct scope *scope,
+	struct ident *ident, struct ident *name);
 
 static const struct type *
 check_autodereference(struct context *ctx, struct location loc,
@@ -1424,11 +1427,49 @@ check_expr_binding(struct context *ctx,
 	const struct type *hint)
 {
 	assert(aexpr->type == EXPR_BINDING || aexpr->type == EXPR_DEFINE);
+
+	bool is_global = ctx->fntype == NULL;
 	expr->type = aexpr->type;
 	expr->result = &builtin_type_void;
 
 	struct expression_binding *binding = &expr->binding;
 	const struct ast_expression_binding *abinding = &aexpr->binding;
+
+	if (!is_global && abinding->attrs.symbol) {
+		error(ctx, aexpr->loc, expr,
+			"Cannot define symbol for local variable");
+		return;
+	}
+	if (!is_global && abinding->attrs.is_exported) {
+		error(ctx, aexpr->loc, expr,
+			"Cannot export local variable");
+		return;
+	}
+	if (!is_global && abinding->attrs.is_threadlocal) {
+		error(ctx, aexpr->loc, expr,
+			"Cannot mark function-local variable as thread-local");
+		return;
+	}
+	if (expr->type == EXPR_DEFINE && !abinding->initializer) {
+		error(ctx, aexpr->loc, expr, "Defines must be initialized");
+		return;
+	}
+	if (expr->type == EXPR_BINDING && !is_global && !abinding->initializer) {
+		error(ctx, aexpr->loc, expr,
+			"Local variables must be initialized");
+		return;
+	}
+	if (is_global && !abinding->initializer && !abinding->type) {
+		error(ctx, aexpr->loc, expr,
+			"Forward declarations must include a type");
+		return;
+	}
+
+	if (is_global) {
+		// The global is created later, once it's eval'd
+		return;
+	}
+
 	const struct type *type = NULL;
 	if (abinding->type) {
 		type = type_store_lookup_atype(ctx, abinding->type);
@@ -1867,6 +1908,122 @@ check_expr_compound(struct context *ctx,
 
 	assert(expr->result);
 	scope_pop(&ctx->scope);
+}
+
+static void
+scan_enum_field(struct context *ctx, struct scope *imports,
+		struct scope *enum_scope, const struct type *etype,
+		struct ast_enum_field *f)
+{
+	// We have to process the last field first
+	// This way, objects in enum_scope will have lnext pointing to
+	// the previous element, which is important for implicit enum values.
+	if (f->next) {
+		scan_enum_field(ctx, imports, enum_scope, etype, f->next);
+	}
+	assert(etype->storage == STORAGE_ENUM);
+	struct incomplete_enum_field *field =
+		xcalloc(1, sizeof(struct incomplete_enum_field));
+	*field = (struct incomplete_enum_field){
+		.field = f,
+		.enum_scope = enum_scope,
+	};
+
+	struct ident *name = intern_ident(ctx->itbl, f->name->name, etype->alias.name);
+	struct scope_object *obj = incomplete_decl_create(
+			ctx, f->loc, enum_scope, name, f->name);
+	obj->idecl->type = IDECL_ENUM_FLD;
+	obj->idecl->imports = imports;
+	obj->type = etype,
+	obj->idecl->field = field;
+}
+
+void
+check_expr_decl_type(struct context *ctx,
+	const struct ast_expression *aexpr,
+	struct expression *expr,
+	const struct type *hint)
+{
+	if (ctx->fntype != NULL) {
+		error(ctx, aexpr->loc, expr,
+			"Cannot declare type within a function body");
+		return;
+	}
+
+	expr->type = EXPR_DECL_TYPE;
+	expr->result = &builtin_type_void;
+
+	const struct ast_decl_type *t = &aexpr->decl_type;
+	struct ident *with_ns = mkident(ctx,  t->ident, NULL);
+	// TODO:
+	//check_hosted_main(ctx, decl->loc, NULL, with_ns, NULL);
+	struct scope_object *obj = incomplete_decl_create(ctx,
+			aexpr->loc, ctx->scope, with_ns, t->ident);
+	obj->idecl->expr = aexpr;
+	obj->idecl->imports = ctx->subunit;
+	if (t->type->storage == STORAGE_ENUM) {
+		const struct type *type = type_store_lookup_enum(
+				ctx, t->type, t->attrs.is_exported);
+		if (type->storage == STORAGE_INVALID) {
+			return; // error occured
+		}
+		scope_push((struct scope **)&type->_enum.values, SCOPE_ENUM);
+		scan_enum_field(ctx, ctx->subunit,
+			type->_enum.values, type, t->type->_enum.values);
+		type->_enum.values->parent = ctx->defines;
+		obj->otype = O_TYPE;
+		obj->type = type;
+		append_decl(ctx, &(struct declaration){
+			.decl_type = DECL_TYPE,
+			.file = aexpr->loc.file,
+			.ident = obj->ident,
+			.exported = t->attrs.is_exported,
+			.type = type,
+		});
+	} else {
+		obj->idecl->type = IDECL_DECL;
+	}
+}
+
+void
+check_expr_decl_fn(struct context *ctx,
+	const struct ast_expression *aexpr,
+	struct expression *expr,
+	const struct type *hint)
+{
+	if (ctx->fntype != NULL) {
+		error(ctx, aexpr->loc, expr,
+			"Cannot declare function nested within a function body");
+		return;
+	}
+
+	expr->type = EXPR_DECL_FN;
+	expr->result = &builtin_type_void;
+ 
+ 	const struct ast_decl_func *func = &aexpr->decl_func;
+ 	struct ident *name, *ident;
+ 	if (func->attrs.flags) {
+ 		const char *template = NULL;
+ 		if (func->attrs.flags & FN_TEST) {
+ 			template = "testfunc.%d";
+ 		} else if (func->attrs.flags & FN_INIT) {
+ 			template = "initfunc.%d";
+ 		} else if (func->attrs.flags & FN_FINI) {
+ 			template = "finifunc.%d";
+ 		}
+ 		assert(template);
+ 		ident = name = intern_generated(ctx, template);
+ 	} else {
+ 		ident = mkident(ctx, func->ident, func->attrs.symbol);
+ 		name = func->ident;
+ 	}
+ 	struct scope_object *obj = incomplete_decl_create(ctx,
+ 		aexpr->loc, ctx->scope, ident, name);
+ 	// TODO:
+ 	//check_hosted_main(ctx, decl->loc, decl, ident, func->symbol);
+ 	obj->idecl->type = IDECL_DECL;
+	obj->idecl->expr = aexpr;
+ 	obj->idecl->imports = ctx->subunit;
 }
 
 static void
@@ -3815,9 +3972,11 @@ check_expression(struct context *ctx,
 		check_expr_compound(ctx, aexpr, expr, hint);
 		break;
 	case EXPR_DECL_TYPE:
-		assert(0); // TODO
+		check_expr_decl_type(ctx, aexpr, expr, hint);
+		break;
 	case EXPR_DECL_FN:
-		assert(0); // TODO
+		check_expr_decl_fn(ctx, aexpr, expr, hint);
+		break;
 	case EXPR_LITERAL:
 		check_expr_literal(ctx, aexpr, expr, hint);
 		break;
@@ -4034,82 +4193,6 @@ incomplete_decl_create(struct context *ctx, struct location loc,
 }
 
 static void
-scan_enum_field(struct context *ctx, struct scope *imports,
-		struct scope *enum_scope, const struct type *etype,
-		struct ast_enum_field *f)
-{
-	// We have to process the last field first
-	// This way, objects in enum_scope will have lnext pointing to
-	// the previous element, which is important for implicit enum values.
-	if (f->next) {
-		scan_enum_field(ctx, imports, enum_scope, etype, f->next);
-	}
-	assert(etype->storage == STORAGE_ENUM);
-	struct incomplete_enum_field *field =
-		xcalloc(1, sizeof(struct incomplete_enum_field));
-	*field = (struct incomplete_enum_field){
-		.field = f,
-		.enum_scope = enum_scope,
-	};
-
-	struct ident *name = intern_ident(ctx->itbl, f->name->name, etype->alias.name);
-	struct scope_object *obj = incomplete_decl_create(
-			ctx, f->loc, enum_scope, name, f->name);
-	obj->idecl->type = IDECL_ENUM_FLD;
-	obj->idecl->imports = imports;
-	obj->type = etype,
-	obj->idecl->field = field;
-}
-
-static void
-check_hosted_main(struct context *ctx,
-	struct location loc,
-	const struct ast_expression *decl,
-	struct ident *ident,
-	const char *symbol)
-{
-	if (*ctx->mainsym == '\0' || ctx->is_test) {
-		return;
-	}
-	if (symbol != ctx->mainsym && (symbol != NULL || ident != ctx->mainident)) {
-		return;
-	}
-
-	const struct ast_decl_func *func;
-	if (decl && decl->type == EXPR_DECL_FN) {
-		func = &decl->decl_func;
-		if (func->attrs.flags != 0) {
-			return;
-		}
-	} else {
-		error(ctx, loc, NULL,
-			"main must be a function in hosted environment");
-		return;
-	}
-
-	if (func->body != NULL && !func->attrs.is_exported) {
-		error(ctx, loc, NULL,
-			"main must be exported in hosted environment");
-		return;
-	}
-	if (func->prototype.params != NULL) {
-		error(ctx, loc, NULL,
-			"main must not have parameters in hosted environment");
-		return;
-	}
-	if (func->prototype.variadism != VARIADISM_NONE) {
-		error(ctx, loc, NULL,
-			"main must not be variadic in hosted environment");
-		return;
-	}
-	if (func->prototype.result->storage != STORAGE_VOID) {
-		error(ctx, loc, NULL,
-			"main must return void in hosted environment");
-		return;
-	}
-}
-
-static void
 unexported_type_error(struct context *ctx,
 	struct location loc, const struct type *type)
 {
@@ -4199,244 +4282,22 @@ check_exported_type(struct context *ctx,
 }
 
 static void
-resolve_const(struct context *ctx, struct scope_object *obj)
-{
-	const struct ast_global_decl *decl = &obj->idecl->decl.constant;
-
-	assert(!decl->symbol); // Invariant
-
-	const struct type *type = NULL;
-	bool context = false;
-	if (decl->type) {
-		type = type_store_lookup_atype(ctx, decl->type);
-	}
-	struct expression *init = xcalloc(1, sizeof(struct expression));
-	obj->value = xcalloc(1, sizeof(struct expression));
-	check_expression(ctx, decl->init, init, type);
-	if (!decl->type) {
-		type = init->result;
-	} else if (decl->type->storage == STORAGE_ARRAY
-			&& decl->type->array.contextual) {
-		context = true;
-		if (type_dealias(ctx, init->result)->storage != STORAGE_ARRAY
-				&& init->result->storage != STORAGE_INVALID) {
-			error(ctx, decl->init->loc, obj->value,
-				"Cannot infer array length from non-array type");
-			goto end;
-		}
-	}
-	if (obj->idecl->decl.exported) {
-		struct location loc =
-			decl->type ? decl->type->loc : decl->init->loc;
-		check_exported_type(ctx, loc, type);
-	}
-	if (!type_is_assignable(ctx, type, init->result)) {
-		char *typename1 = gen_typename(init->result);
-		char *typename2 = gen_typename(type);
-		error(ctx, decl->init->loc, obj->value,
-			"Initializer type %s is not assignable to constant type %s",
-			typename1, typename2);
-		free(typename1);
-		free(typename2);
-		type = &builtin_type_invalid;
-		goto end;
-	}
-	if (decl->type) {
-		if (context) {
-			type = type_dealias(ctx, init->result);
-		}
-		init = lower_implicit_cast(ctx, type, init);
-	}
-
-	if (!eval_expr(ctx, init, obj->value)) {
-		error(ctx, decl->init->loc, obj->value,
-			"Unable to evaluate initializer at compile time");
-		type = &builtin_type_invalid;
-		goto end;
-	}
-end:
-	obj->otype = O_CONST;
-
-	if (!ctx->defines || ctx->errors) {
-		return;
-	}
-	struct scope_object *shadow_obj = scope_lookup(ctx->defines, obj->ident);
-	if (shadow_obj && obj != shadow_obj) {
-		// Shadowed by define
-		if (type_is_flexible(obj->value->result)
-				|| type_is_flexible(shadow_obj->value->result)) {
-			const struct type *promoted = promote_flexible(ctx,
-				obj->value->result, shadow_obj->value->result);
-			if (promoted == NULL) {
-				const char *msg;
-				char *typename = NULL;
-				if (!type_is_flexible(obj->value->result)) {
-					msg = "Constant of type %s is shadowed by define of incompatible flexible type";
-					typename = gen_typename(obj->value->result);
-				} else if (!type_is_flexible(shadow_obj->value->result)) {
-					msg = "Constant of flexible type is shadowed by define of incompatible type %s";
-					typename = gen_typename(shadow_obj->value->result);
-				} else {
-					msg = "Constant of flexible type is shadowed by define of incompatible flexible type";
-				}
-				error(ctx, obj->idecl->decl.loc, NULL, msg, typename);
-				free(typename);
-			} else {
-				shadow_obj->value = lower_implicit_cast(ctx,
-					promoted, shadow_obj->value);
-			}
-		} else if (obj->value->result != shadow_obj->value->result) {
-			char *typename = gen_typename(obj->value->result);
-			char *shadow_typename = gen_typename(shadow_obj->value->result);
-			error(ctx, obj->idecl->decl.loc, NULL,
-					"Constant of type %s is shadowed by define of incompatible type %s",
-					typename, shadow_typename);
-			free(typename);
-			free(shadow_typename);
-		}
-		obj->value = shadow_obj->value;
-	}
-	append_decl(ctx, &(struct declaration){
-		.decl_type = DECL_CONST,
-		.file = obj->idecl->decl.loc.file,
-		.ident = obj->ident,
-		.exported = obj->idecl->decl.exported,
-		.constant = {
-			.type = type,
-			.value = obj->value,
-		}
-	});
-}
-
-static void
 resolve_function(struct context *ctx, struct scope_object *obj)
 {
-	const struct ast_function_decl *decl = &obj->idecl->decl.function;
+	const struct ast_decl_func *func = &obj->idecl->expr->decl_func;
 
 	const struct ast_type fn_atype = {
-		.loc = obj->idecl->decl.loc,
+		.loc = obj->idecl->expr->loc,
 		.storage = STORAGE_FUNCTION,
-		.func = decl->prototype,
+		.func = func->prototype,
 	};
 	const struct type *fntype = type_store_lookup_atype(ctx, &fn_atype);
-	if (obj->idecl->decl.exported) {
-		check_exported_type(ctx, obj->idecl->decl.loc, fntype);
+	if (func->attrs.is_exported) {
+		check_exported_type(ctx, obj->idecl->expr->loc, fntype);
 	}
 
 	obj->otype = O_DECL;
 	obj->type = fntype;
-}
-
-static void
-resolve_global(struct context *ctx, struct scope_object *obj)
-{
-	const struct ast_global_decl *decl = &obj->idecl->decl.global;
-	const struct type *type = NULL;
-	bool context = false;
-	struct expression *init, *value = NULL;
-	if (decl->type) {
-		type = type_store_lookup_atype(ctx, decl->type);
-		if (type->storage == STORAGE_NEVER) {
-			error(ctx, decl->type->loc, NULL,
-				"Global cannot have type never");
-			type = &builtin_type_invalid;
-			goto end;
-		}
-		context = decl->type->storage == STORAGE_ARRAY
-			&& decl->type->array.contextual;
-		if (context && !decl->init) {
-			error(ctx, decl->type->loc, NULL,
-				"Cannot infer array length without an initializer");
-			type = &builtin_type_invalid;
-			goto end;
-		}
-	}
-
-	if (decl->init) {
-		init = xcalloc(1, sizeof(struct expression));
-		value = xcalloc(1, sizeof(struct expression));
-		check_expression(ctx, decl->init, init, type);
-		if (context) {
-			if (type_dealias(ctx, init->result)->storage != STORAGE_ARRAY
-					&& init->result->storage != STORAGE_INVALID) {
-				error(ctx, decl->init->loc, value,
-					"Cannot infer array length from non-array type");
-				goto end;
-			}
-		}
-		if (type) {
-			if (!type_is_assignable(ctx, type, init->result)) {
-				char *typename1 = gen_typename(init->result);
-				char *typename2 = gen_typename(type);
-				error(ctx, decl->init->loc, value,
-					"Initializer type %s is not assignable to global type %s",
-					typename1, typename2);
-				free(typename1);
-				free(typename2);
-				type = &builtin_type_invalid;
-				goto end;
-			}
-			if (context) {
-				type = type_dealias(ctx, init->result);
-			}
-		} else {
-			type = lower_flexible(ctx, init->result, NULL);
-		}
-		init = lower_implicit_cast(ctx, type, init);
-
-		if (type->storage == STORAGE_NEVER) {
-			error(ctx, obj->idecl->decl.loc, NULL,
-				"Global cannot have type never");
-			type = &builtin_type_invalid;
-			goto end;
-		}
-		if (type->size == SIZE_UNDEFINED) {
-			error(ctx, decl->init->loc, NULL,
-				"Cannot initialize object with undefined size");
-			type = &builtin_type_invalid;
-			goto end;
-		}
-		if (type->storage == STORAGE_NULL) {
-			error(ctx, decl->init->loc, NULL,
-				"Can't initialize global as null without explicit type hint");
-			type = &builtin_type_invalid;
-			goto end;
-		}
-		if (!eval_expr(ctx, init, value)) {
-			error(ctx, decl->init->loc, value,
-				"Unable to evaluate initializer at compile time");
-			type = &builtin_type_invalid;
-			goto end;
-		}
-	}
-
-	if (obj->idecl->decl.exported) {
-		struct location loc =
-			decl->type ? decl->type->loc : decl->init->loc;
-		check_exported_type(ctx, loc, type);
-	}
-
-end:;
-	struct ident *name = mkident(ctx, obj->name, NULL);
-	obj->otype = O_DECL;
-	obj->type = type;
-	if (decl->threadlocal) {
-		obj->flags |= SO_THREADLOCAL;
-	}
-
-	append_decl(ctx, &(struct declaration){
-		.decl_type = DECL_GLOBAL,
-		.file = obj->idecl->decl.loc.file,
-		.ident = name,
-		.symbol = ident_to_sym(ctx->itbl, obj->ident),
-
-		.exported = obj->idecl->decl.exported,
-		.global = {
-			.type = type,
-			.value = value,
-			.threadlocal = obj->idecl->decl.global.threadlocal,
-		}
-	});
 }
 
 static void
@@ -4514,16 +4375,17 @@ lookup_enum_type(struct context *ctx, const struct scope_object *obj)
 		}
 
 		if (obj->idecl->type != IDECL_DECL ||
-				obj->idecl->decl.decl_type != ADECL_TYPE) {
+				obj->idecl->expr->type != EXPR_DECL_TYPE) {
 			return NULL;
 		}
 
-		if (obj->idecl->decl.type.type->storage == STORAGE_ENUM) {
+		const struct ast_decl_type *decl = &obj->idecl->expr->decl_type;
+		if (decl->type->storage == STORAGE_ENUM) {
 			assert(false);
-		} else if (obj->idecl->decl.type.type->storage == STORAGE_ALIAS) {
+		} else if (decl->type->storage == STORAGE_ALIAS) {
 			ctx->scope->parent = obj->idecl->imports;
 			const struct scope_object *new = scope_lookup(ctx->scope,
-					obj->idecl->decl.type.type->alias);
+					decl->type->alias);
 			if (new) {
 				obj->idecl->in_progress = true;
 				enum_type = lookup_enum_type(ctx, new);
@@ -4550,15 +4412,55 @@ lookup_enum_type(struct context *ctx, const struct scope_object *obj)
 	return enum_type;
 }
 
+static void
+scan_enum_field_aliases(struct context *ctx, struct scope_object *obj)
+{
+	const struct type *enum_type = lookup_enum_type(ctx, obj);
+
+	if (!enum_type) {
+		return;
+	}
+
+	// orig->type is (perhaps transitively) an alias of a resolved enum
+	// type, which means its dependency graph is a linear chain of
+	// resolved types ending with that enum, so we can immediately resolve it
+	wrap_resolver(ctx, obj, resolve_type);
+
+	for (const struct scope_object *val = enum_type->_enum.values->objects;
+			val; val = val->lnext) {
+		struct ast_enum_field *afield =
+			xcalloc(1, sizeof(struct ast_enum_field));
+		*afield = (struct ast_enum_field){
+			.loc = (struct location){0}, // XXX: what to put here?
+			.name = (struct ident *)val->name,
+		};
+
+		struct incomplete_enum_field *field =
+			xcalloc(1, sizeof(struct incomplete_enum_field));
+		*field = (struct incomplete_enum_field){
+			.field = afield,
+			.enum_scope = val->idecl->field->enum_scope,
+		};
+
+		struct ident *name =
+			intern_ident(ctx->itbl, val->name->name, obj->name);
+		struct scope_object *new = incomplete_decl_create(ctx,
+				(struct location){0}, ctx->scope, name, name);
+		new->idecl->type = IDECL_ENUM_FLD;
+		new->type = obj->type;
+		new->idecl->field = field;
+	}
+}
+
 void
 resolve_dimensions(struct context *ctx, struct scope_object *obj)
 {
-	if (obj->idecl->type != IDECL_DECL || obj->idecl->decl.decl_type != ADECL_TYPE) {
+	if (obj->idecl->type != IDECL_DECL || obj->idecl->expr->type != EXPR_DECL_TYPE) {
 		struct location loc;
 		if (obj->idecl->type == IDECL_ENUM_FLD) {
 			loc = obj->idecl->field->field->loc;
 		} else {
-			loc = obj->idecl->decl.loc;
+			loc = obj->idecl->expr->loc;
 		}
 		char *ident = ident_unparse(obj->name);
 		error(ctx, loc, NULL, "'%s' is not a type", ident);
@@ -4566,8 +4468,8 @@ resolve_dimensions(struct context *ctx, struct scope_object *obj)
 		obj->type = &builtin_type_invalid;
 		return;
 	}
-	struct dimensions dim = type_store_lookup_dimensions(ctx,
-			obj->idecl->decl.type.type);
+	const struct ast_decl_type *decl = &obj->idecl->expr->decl_type;
+	struct dimensions dim = type_store_lookup_dimensions(ctx, decl->type);
 	obj->type = xcalloc(1, sizeof(struct type));
 	*(struct type *)obj->type = (struct type){
 		.size = dim.size,
@@ -4582,36 +4484,35 @@ resolve_type(struct context *ctx, struct scope_object *obj)
 	if (obj->idecl->type == IDECL_ENUM_FLD) {
 		loc = obj->idecl->field->field->loc;
 	} else {
-		loc = obj->idecl->decl.loc;
+		loc = obj->idecl->expr->loc;
 	}
 
-	if (obj->idecl->type != IDECL_DECL || obj->idecl->decl.decl_type != ADECL_TYPE) {
+	if (obj->idecl->type != IDECL_DECL || obj->idecl->expr->type != EXPR_DECL_TYPE) {
 		error_norec(ctx, loc, "'%s' is not a type",
 				ident_unparse(obj->name));
 	}
 
 	// compute type dimensions
+	const struct ast_decl_type *decl = &obj->idecl->expr->decl_type;
 	struct errors **cur_err = ctx->next;
-	struct dimensions dim = type_store_lookup_dimensions(
-			ctx, obj->idecl->decl.type.type);
+	struct dimensions dim = type_store_lookup_dimensions(ctx, decl->type);
 	obj->idecl->in_progress = false;
 
 	// compute type representation and store it
 	struct type *alias = (struct type *)type_store_lookup_alias(ctx, obj->ident,
-			obj->name, NULL, obj->idecl->decl.exported);
+			obj->name, NULL, decl->attrs.is_exported);
 	obj->otype = O_TYPE;
 	obj->type = alias;
 	if (ctx->next == cur_err) {
 		alias->size = dim.size;
 		alias->align = dim.align;
-		alias->alias.type = type_store_lookup_atype(
-			ctx, obj->idecl->decl.type.type);
+		alias->alias.type = type_store_lookup_atype(ctx, decl->type);
 	} else {
 		alias->alias.type = &builtin_type_invalid;
 	}
 	assert(alias->alias.type != NULL);
-	if (obj->idecl->decl.exported) {
-		check_exported_type(ctx, obj->idecl->decl.type.type->loc,
+	if (decl->attrs.is_exported) {
+		check_exported_type(ctx, decl->type->loc,
 			alias->alias.type);
 	}
 	if (alias->alias.type->storage == STORAGE_NEVER) {
@@ -4621,10 +4522,223 @@ resolve_type(struct context *ctx, struct scope_object *obj)
 
 	append_decl(ctx, &(struct declaration){
 		.decl_type = DECL_TYPE,
-		.file = obj->idecl->decl.loc.file,
+		.file = obj->idecl->expr->loc.file,
 		.ident = obj->ident,
-		.exported = obj->idecl->decl.exported,
+		.exported = decl->attrs.is_exported,
 		.type = alias,
+	});
+}
+
+static void
+resolve_const(struct context *ctx, struct scope_object *obj)
+{
+	const struct ast_expression *aexpr = obj->idecl->expr;
+	const struct ast_expression_binding *binding = &aexpr->binding;
+	assert(!binding->attrs.symbol); // Invariant
+
+	const struct type *type = NULL;
+	if (binding->type) {
+		type = type_store_lookup_atype(ctx, binding->type);
+	}
+	struct expression *init = xcalloc(1, sizeof(struct expression));
+	obj->value = xcalloc(1, sizeof(struct expression));
+	check_expression(ctx, binding->initializer, init, type);
+	if (!binding->type) {
+		type = init->result;
+	}
+	if (binding->attrs.is_exported) {
+		struct location loc =
+			binding->type ? binding->type->loc : binding->initializer->loc;
+		check_exported_type(ctx, loc, type);
+	}
+	if (!type_is_assignable(ctx, type, init->result)) {
+		char *typename1 = gen_typename(init->result);
+		char *typename2 = gen_typename(type);
+		error(ctx, binding->initializer->loc, obj->value,
+			"Initializer type %s is not assignable to constant type %s",
+			typename1, typename2);
+		free(typename1);
+		free(typename2);
+		type = &builtin_type_invalid;
+		goto end;
+	}
+	if (binding->type) {
+		if (binding->type->storage == STORAGE_ARRAY
+				&& binding->type->array.contextual) {
+			type = lower_flexible(ctx, init->result, NULL);
+		} else {
+			init = lower_implicit_cast(ctx, type, init);
+		}
+	}
+
+	if (!eval_expr(ctx, init, obj->value)) {
+		error(ctx, binding->initializer->loc, obj->value,
+			"Unable to evaluate initializer at compile time");
+		type = &builtin_type_invalid;
+		goto end;
+	}
+end:
+	obj->otype = O_CONST;
+
+	if (!ctx->defines || ctx->errors) {
+		return;
+	}
+	struct scope_object *shadow_obj = scope_lookup(ctx->defines, obj->ident);
+	if (shadow_obj && obj != shadow_obj) {
+		// Shadowed by define
+		if (type_is_flexible(obj->value->result)
+				|| type_is_flexible(shadow_obj->value->result)) {
+			const struct type *promoted = promote_flexible(ctx,
+				obj->value->result, shadow_obj->value->result);
+			if (promoted == NULL) {
+				const char *msg;
+				char *typename = NULL;
+				if (!type_is_flexible(obj->value->result)) {
+					msg = "Constant of type %s is shadowed by define of incompatible flexible type";
+					typename = gen_typename(obj->value->result);
+				} else if (!type_is_flexible(shadow_obj->value->result)) {
+					msg = "Constant of flexible type is shadowed by define of incompatible type %s";
+					typename = gen_typename(shadow_obj->value->result);
+				} else {
+					msg = "Constant of flexible type is shadowed by define of incompatible flexible type";
+				}
+				error(ctx, aexpr->loc, NULL, msg, typename);
+				free(typename);
+			} else {
+				shadow_obj->value = lower_implicit_cast(ctx,
+					promoted, shadow_obj->value);
+			}
+		} else if (obj->value->result != shadow_obj->value->result) {
+			char *typename = gen_typename(obj->value->result);
+			char *shadow_typename = gen_typename(shadow_obj->value->result);
+			error(ctx, aexpr->loc, NULL,
+					"Constant of type %s is shadowed by define of incompatible type %s",
+					typename, shadow_typename);
+			free(typename);
+			free(shadow_typename);
+		}
+		obj->value = shadow_obj->value;
+	}
+	append_decl(ctx, &(struct declaration){
+		.decl_type = DECL_CONST,
+		.file = aexpr->loc.file,
+		.ident = obj->ident,
+		.exported = binding->attrs.is_exported,
+		.constant = {
+			.type = type,
+			.value = obj->value,
+		}
+	});
+}
+
+static void
+resolve_binding(struct context *ctx, struct scope_object *obj)
+{
+	const struct ast_expression *aexpr = obj->idecl->expr;
+	const struct ast_expression_binding *binding = &aexpr->binding;
+	if (aexpr->type == EXPR_DEFINE) {
+		resolve_const(ctx, obj);
+		return;
+	}
+
+	const struct type *type = NULL;
+	bool context = false;
+	struct expression *init, *value = NULL;
+	if (binding->type) {
+		type = type_store_lookup_atype(ctx, binding->type);
+		context = binding->type->storage == STORAGE_ARRAY
+			&& binding->type->array.contextual;
+		if (context && !binding->initializer) {
+			error(ctx, binding->type->loc, NULL,
+				"Cannot infer array length without an initializer");
+			type = &builtin_type_invalid;
+			goto end;
+		}
+		if (type->storage == STORAGE_NEVER) {
+			error(ctx, binding->type->loc, NULL,
+				"Global cannot have type never");
+			type = &builtin_type_invalid;
+			goto end;
+		}
+	}
+
+	if (binding->initializer) {
+		init = xcalloc(1, sizeof(struct expression));
+		value = xcalloc(1, sizeof(struct expression));
+		check_expression(ctx, binding->initializer, init, type);
+		if (type) {
+			if (!type_is_assignable(ctx, type, init->result)) {
+				char *typename1 = gen_typename(init->result);
+				char *typename2 = gen_typename(type);
+				error(ctx, binding->initializer->loc, value,
+					"Initializer type %s is not assignable to global type %s",
+					typename1, typename2);
+				free(typename1);
+				free(typename2);
+				type = &builtin_type_invalid;
+				goto end;
+			}
+		} else {
+			type = lower_flexible(ctx, init->result, NULL);
+		}
+		if (context) {
+			type = init->result;
+		} else {
+			init = lower_implicit_cast(ctx, type, init);
+		}
+		if (type->storage == STORAGE_NEVER) {
+			error(ctx, binding->initializer->loc, NULL,
+				"Global cannot have type never");
+			type = &builtin_type_invalid;
+			goto end;
+		}
+		if (type->size == SIZE_UNDEFINED) {
+			error(ctx, binding->initializer->loc, NULL,
+				"Cannot initialize object with undefined size");
+			type = &builtin_type_invalid;
+			goto end;
+		}
+		assert(type->size != SIZE_UNDEFINED);
+		if (type->storage == STORAGE_NULL) {
+			error(ctx, binding->initializer->loc, NULL,
+				"Can't initialize global as null without explicit type hint");
+			type = &builtin_type_invalid;
+			goto end;
+		}
+		if (!eval_expr(ctx, init, value)) {
+			error(ctx, binding->initializer->loc, value,
+				"Unable to evaluate initializer at compile time");
+			type = &builtin_type_invalid;
+			goto end;
+		}
+	}
+
+	if (binding->attrs.is_exported) {
+		struct location loc =
+			binding->type ? binding->type->loc : binding->initializer->loc;
+		check_exported_type(ctx, loc, type);
+	}
+
+end:;
+	struct ident *name = mkident(ctx, obj->name, NULL);
+	obj->otype = O_DECL;
+	obj->type = type;
+	if (binding->attrs.is_threadlocal) {
+		obj->flags |= SO_THREADLOCAL;
+	}
+
+	append_decl(ctx, &(struct declaration){
+		.decl_type = DECL_GLOBAL,
+		.file = obj->idecl->expr->loc.file,
+		.ident = name,
+		.symbol = ident_to_sym(ctx->itbl, obj->ident),
+
+		.exported = binding->attrs.is_exported,
+		.global = {
+			.type = type,
+			.value = value,
+			.threadlocal = binding->attrs.is_threadlocal,
+		}
 	});
 }
 
@@ -4639,25 +4753,21 @@ resolve_decl(struct context *ctx, struct scope_object *obj)
 		break;
 	}
 
-	switch (obj->idecl->decl.decl_type) {
-	case ADECL_CONST:
-		resolve_const(ctx, obj);
-		return;
-	case ADECL_GLOBAL:
-		resolve_global(ctx, obj);
-		return;
-	case ADECL_FUNC:
+	const struct ast_expression *expr = obj->idecl->expr;
+	switch (expr->type) {
+	case EXPR_DECL_FN:
 		resolve_function(ctx, obj);
-		return;
-	case ADECL_TYPE:
+		break;
+	case EXPR_DECL_TYPE:
 		resolve_type(ctx, obj);
-		return;
-	case ADECL_ASSERT:;
-		struct expression expr = {0};
-		check_assert(ctx, obj->idecl->decl.assert, obj->idecl->decl.loc, &expr);
-		return;
+		break;
+	case EXPR_BINDING:
+	case EXPR_DEFINE:
+		resolve_binding(ctx, obj);
+		break;
+	default:
+		abort(); // Invariant
 	}
-	abort();
 }
 
 void
@@ -4687,7 +4797,7 @@ wrap_resolver(struct context *ctx, struct scope_object *obj, resolvefn resolver)
 		if (obj->idecl->type == IDECL_ENUM_FLD) {
 			loc = obj->idecl->field->field->loc;
 		} else {
-			loc = obj->idecl->decl.loc;
+			loc = obj->idecl->expr->loc;
 		}
 		error_norec(ctx, loc, "Circular dependency for '%s'",
 			ident_unparse(obj->name));
@@ -4804,10 +4914,9 @@ load_import(struct context *ctx, const struct ast_expression_list *defines,
 }
 
 static void
-eval_subunit(struct context *ctx, struct scope *scope, struct ast_subunit *su)
+eval_expr_list(struct context *ctx, const struct ast_expression_list *exprs)
 {
-	struct ast_expression_list *exprs;
-	for (exprs = su->body; exprs != NULL; exprs = exprs->next) {
+	for (; exprs != NULL; exprs = exprs->next) {
 		struct expression expr = {0};
 		check_expression(ctx, exprs->expr, &expr, NULL);
 	}
@@ -4854,14 +4963,13 @@ check_internal(type_store *ts,
 	sources[0] = "-D";
 	ctx.scope = NULL;
 	ctx.unit = scope_push(&ctx.scope, SCOPE_DEFINES);
-	// TODO: Re-introduce me
-	//for (const struct ast_expression *def = defines; def; def = def->next) {
-	//	const struct ast_decl *decl = &def->decl;
-	//	assert(decl->decl_type == ADECL_CONST);
-	//	struct scope_object *obj =
-	//		scan_const(&ctx, NULL, false, defineloc, &decl->constant);
-	//	resolve_const(&ctx, obj);
-	//}
+
+	eval_expr_list(&ctx, defines);
+	for (struct scope_object *obj = ctx.unit->objects;
+			obj; obj = obj->lnext) {
+		wrap_resolver(&ctx, obj, resolve_decl);
+	}
+
 	ctx.defines = ctx.scope;
 	ctx.scope = NULL;
 	ctx.defines->parent = ctx.unit = scope_push(&ctx.scope, SCOPE_UNIT);
@@ -4872,7 +4980,6 @@ check_internal(type_store *ts,
 	// A scope gets us:
 	//  a) duplicate detection for free
 	//  b) a way to find declaration's definition when it's refered to
-	struct scopes *subunit_scopes = NULL, **next = &subunit_scopes;
 	struct scope *su_scope = NULL;
 	struct identifiers **inext = &unit->imports;
 	for (const struct ast_subunit *su = &aunit->subunits;
@@ -4900,12 +5007,10 @@ check_internal(type_store *ts,
 		}
 
 		ctx.subunit = su_scope;
+		ctx.unit->parent = ctx.subunit;
 		eval_expr_list(&ctx, &su->body);
+		ctx.unit->parent = NULL;
 		ctx.subunit = NULL;
-
-		*next = xcalloc(1, sizeof(struct scopes));
-		(*next)->scope = su_scope;
-		next = &(*next)->next;
 	}
 
 	// Find enum aliases and store them in incomplete enum value declarations
@@ -4929,7 +5034,7 @@ check_internal(type_store *ts,
 		}
 		if (shadowed_obj->otype == O_SCAN) {
 			if (shadowed_obj->idecl->type == IDECL_DECL &&
-					shadowed_obj->idecl->decl.decl_type == ADECL_CONST) {
+					shadowed_obj->idecl->expr->type == EXPR_DEFINE) {
 				continue;
 			}
 		}
@@ -4941,9 +5046,9 @@ check_internal(type_store *ts,
 			obj; obj = obj->lnext) {
 		wrap_resolver(&ctx, obj, resolve_decl);
 		// populate the expression graph
-		if (obj->idecl->type == IDECL_DECL && obj->idecl->decl.decl_type == ADECL_FUNC) {
+		if (obj->idecl->type == IDECL_DECL && obj->idecl->expr->type == EXPR_DECL_FN) {
 			ctx.unit->parent = obj->idecl->imports;
-			check_function(&ctx, obj, &obj->idecl->decl);
+			check_function(&ctx, obj, obj->idecl->expr);
 		}
 	}
 

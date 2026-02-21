@@ -3469,6 +3469,9 @@ gen_expr(struct gen_context *ctx, const struct expression *expr)
 	case EXPR_UNDEFINED:
 		out = gv_void; // no-op
 		break;
+	case EXPR_DECL_FN:
+	case EXPR_DECL_TYPE:
+		abort(); // Invariant
 	}
 
 	if (expr->result->storage == STORAGE_NEVER) {

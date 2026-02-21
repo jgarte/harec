@@ -74,11 +74,6 @@ struct scope {
 	struct scope_object *buckets[SCOPE_BUCKETS];
 };
 
-struct scopes {
-	struct scope *scope;
-	struct scopes *next;
-};
-
 struct scope *scope_push(struct scope **stack, enum scope_class class);
 struct scope *scope_pop(struct scope **stack);
 
@@ -86,7 +81,6 @@ struct scope *scope_lookup_class(struct scope *scope, enum scope_class class);
 struct scope *scope_lookup_label(struct scope *scope, const char *label);
 
 void scope_free(struct scope *scope);
-void scope_free_all(struct scopes *scopes);
 
 struct scope_object *scope_insert(struct scope *scope,
 	enum object_type otype, struct ident *ident, struct ident *name,

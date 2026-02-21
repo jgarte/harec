@@ -204,7 +204,7 @@ export fn main() void = {
 		};"
 	)!;
 
-	compile(status::PARSE, "let a;")!;
+	compile(status::CHECK, "let a;")!;
 	compile(status::CHECK, "
 		type a = struct {
 			b: int,

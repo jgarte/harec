@@ -74,17 +74,6 @@ scope_free(struct scope *scope)
 	free(scope);
 }
 
-void
-scope_free_all(struct scopes *scopes)
-{
-	while (scopes) {
-		struct scopes *next = scopes->next;
-		scope_free(scopes->scope);
-		free(scopes);
-		scopes = next;
-	}
-}
-
 struct scope_object *
 scope_insert(struct scope *scope, enum object_type otype,
 	struct ident *ident, struct ident *name, const struct type *type,
