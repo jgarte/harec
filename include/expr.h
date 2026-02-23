@@ -6,6 +6,8 @@
 
 struct scope;
 struct scope_object;
+struct ast_decl_func;
+struct ast_decl_type;
 
 enum expr_type {
 	EXPR_ACCESS,
@@ -375,6 +377,7 @@ struct expression {
 	const struct type *result;
 	enum expr_type type;
 	struct location loc; // For fixed aborts
+	const struct ast_expression *aexpr;
 	union {
 		struct expression_access access;
 		struct expression_alloc alloc;

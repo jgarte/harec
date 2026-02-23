@@ -30,7 +30,7 @@ mkident(struct context *ctx, struct ident *in, const char *symbol)
 	}
 }
 
-static struct ident *
+struct ident *
 intern_generated(struct context *ctx, const char *template)
 {
 	const char *s = intern_owned(ctx->itbl, gen_name(&ctx->id, template));
@@ -171,9 +171,6 @@ lower_implicit_cast(struct context *ctx,
 }
 
 static void resolve_decl(struct context *ctx, struct scope_object *obj);
-static struct scope_object *incomplete_decl_create(struct context *ctx,
-	struct location loc, struct scope *scope,
-	struct ident *ident, struct ident *name);
 
 static const struct type *
 check_autodereference(struct context *ctx, struct location loc,
@@ -1910,34 +1907,6 @@ check_expr_compound(struct context *ctx,
 	scope_pop(&ctx->scope);
 }
 
-static void
-scan_enum_field(struct context *ctx, struct scope *imports,
-		struct scope *enum_scope, const struct type *etype,
-		struct ast_enum_field *f)
-{
-	// We have to process the last field first
-	// This way, objects in enum_scope will have lnext pointing to
-	// the previous element, which is important for implicit enum values.
-	if (f->next) {
-		scan_enum_field(ctx, imports, enum_scope, etype, f->next);
-	}
-	assert(etype->storage == STORAGE_ENUM);
-	struct incomplete_enum_field *field =
-		xcalloc(1, sizeof(struct incomplete_enum_field));
-	*field = (struct incomplete_enum_field){
-		.field = f,
-		.enum_scope = enum_scope,
-	};
-
-	struct ident *name = intern_ident(ctx->itbl, f->name->name, etype->alias.name);
-	struct scope_object *obj = incomplete_decl_create(
-			ctx, f->loc, enum_scope, name, f->name);
-	obj->idecl->type = IDECL_ENUM_FLD;
-	obj->idecl->imports = imports;
-	obj->type = etype,
-	obj->idecl->field = field;
-}
-
 void
 check_expr_decl_type(struct context *ctx,
 	const struct ast_expression *aexpr,
@@ -1952,37 +1921,6 @@ check_expr_decl_type(struct context *ctx,
 
 	expr->type = EXPR_DECL_TYPE;
 	expr->result = &builtin_type_void;
-
-	const struct ast_decl_type *t = &aexpr->decl_type;
-	struct ident *with_ns = mkident(ctx,  t->ident, NULL);
-	// TODO:
-	//check_hosted_main(ctx, decl->loc, NULL, with_ns, NULL);
-	struct scope_object *obj = incomplete_decl_create(ctx,
-			aexpr->loc, ctx->scope, with_ns, t->ident);
-	obj->idecl->expr = aexpr;
-	obj->idecl->imports = ctx->subunit;
-	if (t->type->storage == STORAGE_ENUM) {
-		const struct type *type = type_store_lookup_enum(
-				ctx, t->type, t->attrs.is_exported);
-		if (type->storage == STORAGE_INVALID) {
-			return; // error occured
-		}
-		scope_push((struct scope **)&type->_enum.values, SCOPE_ENUM);
-		scan_enum_field(ctx, ctx->subunit,
-			type->_enum.values, type, t->type->_enum.values);
-		type->_enum.values->parent = ctx->defines;
-		obj->otype = O_TYPE;
-		obj->type = type;
-		append_decl(ctx, &(struct declaration){
-			.decl_type = DECL_TYPE,
-			.file = aexpr->loc.file,
-			.ident = obj->ident,
-			.exported = t->attrs.is_exported,
-			.type = type,
-		});
-	} else {
-		obj->idecl->type = IDECL_DECL;
-	}
 }
 
 void
@@ -3932,6 +3870,7 @@ check_expression(struct context *ctx,
 	struct expression *expr,
 	const struct type *hint)
 {
+	expr->aexpr = aexpr;
 	expr->loc = aexpr->loc;
 
 	switch (aexpr->type) {
@@ -4174,7 +4113,7 @@ end:
 	append_decl(ctx, decl);
 }
 
-static struct scope_object *
+struct scope_object *
 incomplete_decl_create(struct context *ctx, struct location loc,
 		struct scope *scope, struct ident *ident, struct ident *name)
 {
@@ -4190,6 +4129,18 @@ incomplete_decl_create(struct context *ctx, struct location loc,
 	obj = scope_insert(scope, O_SCAN, ident, name, NULL, NULL);
 	obj->idecl = xcalloc(1, sizeof(struct incomplete_decl));
 	return obj;
+}
+
+bool
+is_hosted_main(struct context *ctx, struct ident *ident, const char *symbol)
+{
+	if (*ctx->mainsym == '\0' || ctx->is_test) {
+		return false;
+	}
+	if (symbol != ctx->mainsym && (symbol != NULL || ident != ctx->mainident)) {
+		return false;
+	}
+	return true;
 }
 
 static void
@@ -4919,6 +4870,13 @@ eval_expr_list(struct context *ctx, const struct ast_expression_list *exprs)
 	for (; exprs != NULL; exprs = exprs->next) {
 		struct expression expr = {0};
 		check_expression(ctx, exprs->expr, &expr, NULL);
+
+		struct expression ev;
+		bool valid = eval_expr(ctx, &expr, &ev);
+		if (valid) {
+			continue;
+		}
+		error(ctx, expr.loc, &expr, "Unable to evaluate expression at compile time");
 	}
 }
 

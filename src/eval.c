@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ast.h"
 #include "check.h"
 #include "eval.h"
 #include "expr.h"
@@ -400,6 +401,77 @@ eval_binarithm(struct context *ctx,
 }
 
 static bool
+eval_bind_global(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	const struct ast_expression *aexpr = in->aexpr;
+	const struct ast_expression_binding *binding = &aexpr->binding;
+	assert(!binding->names.next); // TODO
+
+	struct ident *ident = mkident(ctx, binding->names.name,
+			binding->attrs.symbol);
+	if (is_hosted_main(ctx, ident, binding->attrs.symbol)) {
+		error(ctx, in->loc, NULL,
+			"main must be a function in hosted environment");
+	}
+	struct scope_object *obj = incomplete_decl_create(ctx, in->loc,
+		ctx->scope, ident, binding->names.name);
+	obj->idecl->type = IDECL_DECL;
+	obj->idecl->expr = aexpr;
+	obj->idecl->imports = ctx->subunit;
+
+	out->type = EXPR_LITERAL;
+	out->result = &builtin_type_void;
+	return true;
+}
+
+static bool
+eval_bind_const(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	const struct ast_expression *aexpr = in->aexpr;
+	const struct ast_expression_binding *binding = &aexpr->binding;
+	assert(!binding->names.next); // TODO
+
+	struct ident *ident = mkident(ctx, binding->names.name,
+			binding->attrs.symbol);
+	if (is_hosted_main(ctx, ident, binding->attrs.symbol)) {
+		error(ctx, in->loc, NULL,
+			"main must be a function in hosted environment");
+	}
+	struct scope_object *obj = incomplete_decl_create(ctx, in->loc,
+		ctx->scope, ident, binding->names.name);
+	obj->idecl->type = IDECL_DECL;
+	obj->idecl->expr = aexpr;
+	obj->idecl->imports = ctx->subunit;
+
+	out->type = EXPR_LITERAL;
+	out->result = &builtin_type_void;
+	return true;
+}
+
+static bool
+eval_binding(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	switch (in->type) {
+	case EXPR_BINDING:
+		if (in->type == EXPR_BINDING && ctx->fntype != NULL) {
+			// Cannot eval binding expressions for function locals
+			return false;
+		}
+		return eval_bind_global(ctx, in, out);
+	case EXPR_DEFINE:
+		return eval_bind_const(ctx, in, out);
+	default:
+		abort(); // Invariant
+	}
+}
+
+static bool
 eval_literal(struct context *ctx,
 	const struct expression *restrict in,
 	struct expression *restrict out)
@@ -706,6 +778,138 @@ eval_cast(struct context *ctx,
 	}
 
 	assert(0); // Unreachable
+}
+
+static bool
+eval_decl_fn(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	const struct ast_expression *aexpr = in->aexpr;
+	const struct ast_decl_func *func = &aexpr->decl_func;
+	struct ident *name, *ident;
+	if (func->attrs.flags) {
+		const char *template = NULL;
+		if (func->attrs.flags & FN_TEST) {
+			template = "testfunc.%d";
+		} else if (func->attrs.flags & FN_INIT) {
+			template = "initfunc.%d";
+		} else if (func->attrs.flags & FN_FINI) {
+			template = "finifunc.%d";
+		}
+		assert(template);
+		ident = name = intern_generated(ctx, template);
+	} else {
+		ident = mkident(ctx, func->ident, func->attrs.symbol);
+		name = func->ident;
+	}
+	struct scope_object *obj = incomplete_decl_create(ctx,
+		aexpr->loc, ctx->scope, ident, name);
+	obj->idecl->type = IDECL_DECL;
+	obj->idecl->expr = aexpr;
+	obj->idecl->imports = ctx->subunit;
+
+	out->type = EXPR_LITERAL;
+	out->result = &builtin_type_void;
+
+	if (!is_hosted_main(ctx, ident, func->attrs.symbol)) {
+		return true;
+	}
+
+	if (func->body != NULL && !func->attrs.is_exported) {
+		error(ctx, in->loc, NULL,
+			"main must be exported in hosted environment");
+		return true;
+	}
+	if (func->prototype.params != NULL) {
+		error(ctx, in->loc, NULL,
+			"main must not have parameters in hosted environment");
+		return true;
+	}
+	if (func->prototype.variadism != VARIADISM_NONE) {
+		error(ctx, in->loc, NULL,
+			"main must not be variadic in hosted environment");
+		return true;
+	}
+	if (func->prototype.result->storage != STORAGE_VOID) {
+		error(ctx, in->loc, NULL,
+			"main must return void in hosted environment");
+		return true;
+	}
+
+	return true;
+}
+
+static void
+scan_enum_field(struct context *ctx, struct scope *imports,
+		struct scope *enum_scope, const struct type *etype,
+		struct ast_enum_field *f)
+{
+	// We have to process the last field first
+	// This way, objects in enum_scope will have lnext pointing to
+	// the previous element, which is important for implicit enum values.
+	if (f->next) {
+		scan_enum_field(ctx, imports, enum_scope, etype, f->next);
+	}
+	assert(etype->storage == STORAGE_ENUM);
+	struct incomplete_enum_field *field =
+		xcalloc(1, sizeof(struct incomplete_enum_field));
+	*field = (struct incomplete_enum_field){
+		.field = f,
+		.enum_scope = enum_scope,
+	};
+
+	struct ident *name = intern_ident(ctx->itbl, f->name->name, etype->alias.name);
+	struct scope_object *obj = incomplete_decl_create(
+			ctx, f->loc, enum_scope, name, f->name);
+	obj->idecl->type = IDECL_ENUM_FLD;
+	obj->idecl->imports = imports;
+	obj->type = etype,
+	obj->idecl->field = field;
+}
+
+static bool
+eval_decl_type(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	const struct ast_expression *aexpr = in->aexpr;
+	const struct ast_decl_type *t = &aexpr->decl_type;
+	struct ident *with_ns = mkident(ctx,  t->ident, NULL);
+	if (is_hosted_main(ctx, with_ns, NULL)) {
+		error(ctx, in->loc, NULL,
+			"main must be a function in hosted environment");
+	}
+	struct scope_object *obj = incomplete_decl_create(ctx,
+			aexpr->loc, ctx->scope, with_ns, t->ident);
+	obj->idecl->expr = aexpr;
+	obj->idecl->imports = ctx->subunit;
+	if (t->type->storage == STORAGE_ENUM) {
+		const struct type *type = type_store_lookup_enum(
+				ctx, t->type, t->attrs.is_exported);
+		if (type->storage == STORAGE_INVALID) {
+			return false; // error occured
+		}
+		scope_push((struct scope **)&type->_enum.values, SCOPE_ENUM);
+		scan_enum_field(ctx, ctx->subunit,
+			type->_enum.values, type, t->type->_enum.values);
+		type->_enum.values->parent = ctx->defines;
+		obj->otype = O_TYPE;
+		obj->type = type;
+		append_decl(ctx, &(struct declaration){
+			.decl_type = DECL_TYPE,
+			.file = aexpr->loc.file,
+			.ident = obj->ident,
+			.exported = t->attrs.is_exported,
+			.type = type,
+		});
+	} else {
+		obj->idecl->type = IDECL_DECL;
+	}
+
+	out->type = EXPR_LITERAL;
+	out->result = &builtin_type_void;
+	return true;
 }
 
 static bool
@@ -1246,6 +1450,9 @@ eval_expr(struct context *ctx,
 		return eval_access(ctx, in, out);
 	case EXPR_BINARITHM:
 		return eval_binarithm(ctx, in, out);
+	case EXPR_BINDING:
+	case EXPR_DEFINE:
+		return eval_binding(ctx, in, out);
 	case EXPR_CAST:
 		switch (in->cast.kind) {
 		case C_CAST:
@@ -1257,6 +1464,10 @@ eval_expr(struct context *ctx,
 		default:
 			assert(0); // Unreachable
 		}
+	case EXPR_DECL_FN:
+		return eval_decl_fn(ctx, in, out);
+	case EXPR_DECL_TYPE:
+		return eval_decl_type(ctx, in, out);
 	case EXPR_LEN:
 		return eval_len(ctx, in, out);
 	case EXPR_LITERAL:
@@ -1277,13 +1488,11 @@ eval_expr(struct context *ctx,
 	case EXPR_APPEND:
 	case EXPR_ASSERT:
 	case EXPR_ASSIGN:
-	case EXPR_BINDING:
 	case EXPR_BREAK:
 	case EXPR_CALL:
 	case EXPR_COMPOUND:
 	case EXPR_CONTINUE:
 	case EXPR_DEFER:
-	case EXPR_DEFINE:
 	case EXPR_DELETE:
 	case EXPR_FOR:
 	case EXPR_FREE:
@@ -1298,8 +1507,6 @@ eval_expr(struct context *ctx,
 	case EXPR_VAEND:
 	case EXPR_VASTART:
 	case EXPR_YIELD:
-	case EXPR_DECL_FN:
-	case EXPR_DECL_TYPE:
 		return false;
 	}
 	assert(0); // Unreachable

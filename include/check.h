@@ -119,10 +119,15 @@ struct incomplete_decl {
 	};
 };
 
+struct ident *intern_generated(struct context *ctx, const char *template);
 struct ident *mkident(struct context *ctx, struct ident *ident,
 		const char *symbol);
 
+struct scope_object *incomplete_decl_create(struct context *ctx,
+	struct location loc, struct scope *scope,
+	struct ident *ident, struct ident *name);
 void append_decl(struct context *ctx, struct declaration *decl);
+bool is_hosted_main(struct context *ctx, struct ident *ident, const char *symbol);
 
 void mkstrliteral(struct expression *expr, const char *fmt, ...) FORMAT(2, 3);
 
