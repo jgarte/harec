@@ -64,6 +64,9 @@ struct scope {
 	struct type_tagged_union results;
 	struct yield *yields;
 
+	// EXPR_LITERAL, used for compile-time scopes
+	struct expression *value;
+
 	// Linked list in insertion order
 	// Used for function parameters and enum values, where order matters
 	struct scope_object *objects;

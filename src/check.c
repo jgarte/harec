@@ -892,6 +892,7 @@ check_assert(struct context *ctx,
 			expr->result = &builtin_type_never;
 		}
 	}
+
 	if (e.message == NULL) {
 		expr->assert.fixed_reason = ABORT_ANON_ASSERTION_FAILED;
 	} else {

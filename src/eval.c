@@ -472,6 +472,24 @@ eval_binding(struct context *ctx,
 }
 
 static bool
+eval_compound(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	struct expression _out; // Discarded
+	struct scope *scope = in->compound.scope;
+	scope->value = out;
+	for (const struct expressions *exprs = &in->compound.exprs;
+			exprs; exprs = exprs->next) {
+		bool valid = eval_expr(ctx, exprs->expr, &_out);
+		if (!valid) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool
 eval_literal(struct context *ctx,
 	const struct expression *restrict in,
 	struct expression *restrict out)
@@ -910,6 +928,22 @@ eval_decl_type(struct context *ctx,
 	out->type = EXPR_LITERAL;
 	out->result = &builtin_type_void;
 	return true;
+}
+
+static bool
+eval_if(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	struct expression cond;
+	if (!eval_expr(ctx, in->_if.cond, &cond)) {
+		return false;
+	}
+	if (cond.literal.bval) {
+		return eval_expr(ctx, in->_if.true_branch, out);
+	} else {
+		return eval_expr(ctx, in->_if.false_branch, out);
+	}
 }
 
 static bool
@@ -1436,6 +1470,15 @@ eval_unarithm(struct context *ctx,
 	return true;
 }
 
+static bool
+eval_yield(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	eval_expr(ctx, in->control.value, in->control.scope->value);
+	return true;
+}
+
 bool
 eval_expr(struct context *ctx,
 	const struct expression *restrict in,
@@ -1453,6 +1496,8 @@ eval_expr(struct context *ctx,
 	case EXPR_BINDING:
 	case EXPR_DEFINE:
 		return eval_binding(ctx, in, out);
+	case EXPR_COMPOUND:
+		return eval_compound(ctx, in, out);
 	case EXPR_CAST:
 		switch (in->cast.kind) {
 		case C_CAST:
@@ -1468,6 +1513,8 @@ eval_expr(struct context *ctx,
 		return eval_decl_fn(ctx, in, out);
 	case EXPR_DECL_TYPE:
 		return eval_decl_type(ctx, in, out);
+	case EXPR_IF:
+		return eval_if(ctx, in, out);
 	case EXPR_LEN:
 		return eval_len(ctx, in, out);
 	case EXPR_LITERAL:
@@ -1484,13 +1531,14 @@ eval_expr(struct context *ctx,
 		out->type = EXPR_UNDEFINED;
 		out->result = &builtin_type_undefined;
 		return true;
+	case EXPR_YIELD:
+		return eval_yield(ctx, in, out);
 	case EXPR_ALLOC:
 	case EXPR_APPEND:
 	case EXPR_ASSERT:
 	case EXPR_ASSIGN:
 	case EXPR_BREAK:
 	case EXPR_CALL:
-	case EXPR_COMPOUND:
 	case EXPR_CONTINUE:
 	case EXPR_DEFER:
 	case EXPR_DELETE:
@@ -1506,7 +1554,6 @@ eval_expr(struct context *ctx,
 	case EXPR_VAARG:
 	case EXPR_VAEND:
 	case EXPR_VASTART:
-	case EXPR_YIELD:
 		return false;
 	}
 	assert(0); // Unreachable
