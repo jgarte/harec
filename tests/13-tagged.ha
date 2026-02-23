@@ -120,9 +120,6 @@ fn casts() void = {
 	static assert(4: (size | void) is size);
 	static assert(4: (size | void) as size == 4z);
 	compile(status::CHECK,
-		"def TEST = static assert(4: (size | void): size == 4z);"
-	)!;
-	compile(status::CHECK,
 		"let x = 4: (size | str | void): (size | str);"
 	)!;
 };

@@ -114,7 +114,9 @@ struct incomplete_decl {
 	bool in_progress;
 	bool dealias_in_progress;
 	union {
-		const struct ast_expression *expr;
+		// IDECL_DECL
+		const struct ast_expression *aexpr;
+		// IDECL_ENUM_FLD
 		struct incomplete_enum_field *field;
 	};
 };

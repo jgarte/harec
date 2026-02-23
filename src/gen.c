@@ -959,6 +959,8 @@ extend(struct gen_context *ctx, struct qbe_value v, const struct type *type)
 static void
 gen_expr_assert(struct gen_context *ctx, const struct expression *expr)
 {
+	assert(!expr->assert.is_static);
+
 	struct qbe_statement failedl, passedl;
 	if (expr->assert.cond) {
 		struct qbe_value bfailed = mklabel(ctx, &failedl, "failed.%d");

@@ -8,5 +8,8 @@ struct context;
 // Evaluates an expression at compile time.
 bool eval_expr(struct context *ctx, const struct expression *restrict in,
 	struct expression *restrict out);
+bool eval_assert(struct context *ctx,
+	const struct expression *restrict in,
+	bool resolving);
 
 #endif

@@ -70,6 +70,61 @@ eval_access(struct context *ctx,
 	return true;
 }
 
+bool
+eval_assert(struct context *ctx,
+	const struct expression *restrict in,
+	bool resolving)
+{
+	// Global static assertions are deferred until the dependency solver
+	// gets around to them
+	bool is_global = ctx->fntype == NULL;
+	if (is_global && in->assert.is_static && !resolving) {
+		struct ident *id = intern_generated(ctx, "static_assert.%d");
+		struct scope_object *obj =
+			incomplete_decl_create(ctx, in->loc, ctx->scope, id, id);
+		obj->idecl->type = IDECL_DECL;
+		obj->idecl->aexpr = in->aexpr;
+		obj->idecl->imports = ctx->subunit;
+		return true;
+	}
+
+	bool cond = false;
+	if (in->assert.cond != NULL) {
+		struct expression out = {0}, msgout = {0};
+		if (!eval_expr(ctx, in->assert.cond, &out)) {
+			error(ctx, in->assert.cond->loc, NULL,
+				"Unable to evaluate static assertion condition at compile time");
+			return false;
+		}
+		if (in->assert.message) {
+			if (!eval_expr(ctx, in->assert.message, &msgout)) {
+				error(ctx, in->assert.message->loc, NULL,
+					"Unable to evaluate static assertion message at compile time");
+				return false;
+			}
+		}
+		const struct type *cond_type = type_dealias(ctx, out.result);
+		if (cond_type == &builtin_type_invalid) {
+			return false;
+		}
+		assert(type_dealias(ctx, out.result)->storage == STORAGE_BOOL);
+		cond = out.literal.bval;
+	}
+
+	if (!cond) {
+		if (in->assert.message != NULL) {
+			const struct expression_literal *message =
+				&in->assert.message->literal;
+			error(ctx, in->loc, NULL, "Static assertion failed: %.*s",
+				(int)message->string.len, message->string.value);
+		} else {
+			error(ctx, in->loc, NULL, "Static assertion failed");
+		}
+	}
+
+	return true;
+}
+
 static uint64_t
 itrunc(struct context *ctx, const struct type *type, uint64_t val)
 {
@@ -418,7 +473,7 @@ eval_bind_global(struct context *ctx,
 	struct scope_object *obj = incomplete_decl_create(ctx, in->loc,
 		ctx->scope, ident, binding->names.name);
 	obj->idecl->type = IDECL_DECL;
-	obj->idecl->expr = aexpr;
+	obj->idecl->aexpr = aexpr;
 	obj->idecl->imports = ctx->subunit;
 
 	out->type = EXPR_LITERAL;
@@ -444,7 +499,7 @@ eval_bind_const(struct context *ctx,
 	struct scope_object *obj = incomplete_decl_create(ctx, in->loc,
 		ctx->scope, ident, binding->names.name);
 	obj->idecl->type = IDECL_DECL;
-	obj->idecl->expr = aexpr;
+	obj->idecl->aexpr = aexpr;
 	obj->idecl->imports = ctx->subunit;
 
 	out->type = EXPR_LITERAL;
@@ -824,7 +879,7 @@ eval_decl_fn(struct context *ctx,
 	struct scope_object *obj = incomplete_decl_create(ctx,
 		aexpr->loc, ctx->scope, ident, name);
 	obj->idecl->type = IDECL_DECL;
-	obj->idecl->expr = aexpr;
+	obj->idecl->aexpr = aexpr;
 	obj->idecl->imports = ctx->subunit;
 
 	out->type = EXPR_LITERAL;
@@ -900,7 +955,7 @@ eval_decl_type(struct context *ctx,
 	}
 	struct scope_object *obj = incomplete_decl_create(ctx,
 			aexpr->loc, ctx->scope, with_ns, t->ident);
-	obj->idecl->expr = aexpr;
+	obj->idecl->aexpr = aexpr;
 	obj->idecl->imports = ctx->subunit;
 	if (t->type->storage == STORAGE_ENUM) {
 		const struct type *type = type_store_lookup_enum(
@@ -1491,6 +1546,9 @@ eval_expr(struct context *ctx,
 	switch (in->type) {
 	case EXPR_ACCESS:
 		return eval_access(ctx, in, out);
+	case EXPR_ASSERT:
+		out->result = &builtin_type_void;
+		return eval_assert(ctx, in, false);
 	case EXPR_BINARITHM:
 		return eval_binarithm(ctx, in, out);
 	case EXPR_BINDING:
@@ -1535,7 +1593,6 @@ eval_expr(struct context *ctx,
 		return eval_yield(ctx, in, out);
 	case EXPR_ALLOC:
 	case EXPR_APPEND:
-	case EXPR_ASSERT:
 	case EXPR_ASSIGN:
 	case EXPR_BREAK:
 	case EXPR_CALL:

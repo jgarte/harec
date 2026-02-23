@@ -117,6 +117,7 @@ struct expression_assert {
 	struct expression *cond;
 	struct expression *message;
 	enum fixed_aborts fixed_reason;
+	bool is_static;
 };
 
 enum binarithm_operator {

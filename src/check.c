@@ -867,84 +867,58 @@ check_expr_append_insert(struct context *ctx,
 }
 
 static void
-check_assert(struct context *ctx,
-	struct ast_expression_assert e,
-	struct location loc,
-	struct expression *expr)
+check_expr_assert(struct context *ctx,
+	const struct ast_expression *aexpr,
+	struct expression *expr,
+	const struct type *hint,
+	bool resolving)
 {
+	const struct ast_expression_assert *assert = &aexpr->assert;
 	expr->result = &builtin_type_void;
 	expr->type = EXPR_ASSERT;
+	expr->assert.is_static = assert->is_static;
 
-	if (e.cond != NULL) {
+	bool is_global = ctx->fntype == NULL;
+	if (is_global && assert->is_static && !resolving) {
+		return;
+	}
+
+	if (assert->cond != NULL) {
 		expr->assert.cond = xcalloc(1, sizeof(struct expression));
-		check_expression(ctx, e.cond, expr->assert.cond, &builtin_type_bool);
-		loc = e.cond->loc;
+		check_expression(ctx, assert->cond, expr->assert.cond, &builtin_type_bool);
 		if (expr->assert.cond->result->storage == STORAGE_INVALID) {
 			mkerror(expr);
 			return;
 		}
 		if (type_dealias(ctx, expr->assert.cond->result)->storage != STORAGE_BOOL) {
-			error(ctx, loc, expr, "Assertion condition must be boolean");
+			error(ctx, assert->cond->loc, expr,
+				"Assertion condition must be boolean");
 			return;
 		}
 	} else {
-		if (!e.is_static) {
+		if (!assert->is_static) {
 			expr->result = &builtin_type_never;
 		}
 	}
 
-	if (e.message == NULL) {
+	if (assert->message == NULL) {
 		expr->assert.fixed_reason = ABORT_ANON_ASSERTION_FAILED;
 	} else {
 		expr->assert.message = xcalloc(1, sizeof(struct expression));
-		check_expression(ctx, e.message, expr->assert.message, &builtin_type_str);
+		check_expression(ctx, assert->message, expr->assert.message, &builtin_type_str);
 		if (type_dealias(ctx, expr->assert.message->result)->storage != STORAGE_STRING) {
-			error(ctx, e.message->loc, expr,
+			error(ctx, assert->message->loc, expr,
 				"Assertion message must be string");
 			return;
 		}
 	}
 
-	if (e.is_static) {
+	if (assert->is_static) {
+		struct expression out = {0};
+		eval_expr(ctx, expr, &out);
+		// Replace expression with literal void
 		expr->type = EXPR_LITERAL;
-		bool cond = false;
-		if (expr->assert.cond != NULL) {
-			struct expression out = {0}, msgout = {0};
-			if (!eval_expr(ctx, expr->assert.cond, &out)) {
-				error(ctx, e.cond->loc, expr,
-					"Unable to evaluate static assertion condition at compile time");
-				return;
-			}
-			if (expr->assert.message) {
-				if (!eval_expr(ctx, expr->assert.message, &msgout)) {
-					error(ctx, e.message->loc, expr,
-						"Unable to evaluate static assertion message at compile time");
-					return;
-				}
-			}
-			assert(type_dealias(ctx, out.result)->storage == STORAGE_BOOL);
-			cond = out.literal.bval;
-		}
-		// XXX: Should these abort immediately?
-		if (!cond) {
-			if (e.message != NULL) {
-				error(ctx, loc, expr, "Static assertion failed: %.*s",
-					(int)expr->assert.message->literal.string.len,
-					expr->assert.message->literal.string.value);
-			} else {
-				error(ctx, loc, expr, "Static assertion failed");
-			}
-		}
 	}
-}
-
-static void
-check_expr_assert(struct context *ctx,
-	const struct ast_expression *aexpr,
-	struct expression *expr,
-	const struct type *hint)
-{
-	check_assert(ctx, aexpr->assert, aexpr->loc, expr);
 }
 
 static void
@@ -3885,7 +3859,7 @@ check_expression(struct context *ctx,
 		check_expr_append_insert(ctx, aexpr, expr, hint);
 		break;
 	case EXPR_ASSERT:
-		check_expr_assert(ctx, aexpr, expr, hint);
+		check_expr_assert(ctx, aexpr, expr, hint, false);
 		break;
 	case EXPR_ASSIGN:
 		check_expr_assign(ctx, aexpr, expr, hint);
@@ -4236,16 +4210,16 @@ check_exported_type(struct context *ctx,
 static void
 resolve_function(struct context *ctx, struct scope_object *obj)
 {
-	const struct ast_decl_func *func = &obj->idecl->expr->decl_func;
+	const struct ast_decl_func *func = &obj->idecl->aexpr->decl_func;
 
 	const struct ast_type fn_atype = {
-		.loc = obj->idecl->expr->loc,
+		.loc = obj->idecl->aexpr->loc,
 		.storage = STORAGE_FUNCTION,
 		.func = func->prototype,
 	};
 	const struct type *fntype = type_store_lookup_atype(ctx, &fn_atype);
 	if (func->attrs.is_exported) {
-		check_exported_type(ctx, obj->idecl->expr->loc, fntype);
+		check_exported_type(ctx, obj->idecl->aexpr->loc, fntype);
 	}
 
 	obj->otype = O_DECL;
@@ -4327,11 +4301,11 @@ lookup_enum_type(struct context *ctx, const struct scope_object *obj)
 		}
 
 		if (obj->idecl->type != IDECL_DECL ||
-				obj->idecl->expr->type != EXPR_DECL_TYPE) {
+				obj->idecl->aexpr->type != EXPR_DECL_TYPE) {
 			return NULL;
 		}
 
-		const struct ast_decl_type *decl = &obj->idecl->expr->decl_type;
+		const struct ast_decl_type *decl = &obj->idecl->aexpr->decl_type;
 		if (decl->type->storage == STORAGE_ENUM) {
 			assert(false);
 		} else if (decl->type->storage == STORAGE_ALIAS) {
@@ -4407,12 +4381,12 @@ scan_enum_field_aliases(struct context *ctx, struct scope_object *obj)
 void
 resolve_dimensions(struct context *ctx, struct scope_object *obj)
 {
-	if (obj->idecl->type != IDECL_DECL || obj->idecl->expr->type != EXPR_DECL_TYPE) {
+	if (obj->idecl->type != IDECL_DECL || obj->idecl->aexpr->type != EXPR_DECL_TYPE) {
 		struct location loc;
 		if (obj->idecl->type == IDECL_ENUM_FLD) {
 			loc = obj->idecl->field->field->loc;
 		} else {
-			loc = obj->idecl->expr->loc;
+			loc = obj->idecl->aexpr->loc;
 		}
 		char *ident = ident_unparse(obj->name);
 		error(ctx, loc, NULL, "'%s' is not a type", ident);
@@ -4420,7 +4394,7 @@ resolve_dimensions(struct context *ctx, struct scope_object *obj)
 		obj->type = &builtin_type_invalid;
 		return;
 	}
-	const struct ast_decl_type *decl = &obj->idecl->expr->decl_type;
+	const struct ast_decl_type *decl = &obj->idecl->aexpr->decl_type;
 	struct dimensions dim = type_store_lookup_dimensions(ctx, decl->type);
 	obj->type = xcalloc(1, sizeof(struct type));
 	*(struct type *)obj->type = (struct type){
@@ -4436,16 +4410,16 @@ resolve_type(struct context *ctx, struct scope_object *obj)
 	if (obj->idecl->type == IDECL_ENUM_FLD) {
 		loc = obj->idecl->field->field->loc;
 	} else {
-		loc = obj->idecl->expr->loc;
+		loc = obj->idecl->aexpr->loc;
 	}
 
-	if (obj->idecl->type != IDECL_DECL || obj->idecl->expr->type != EXPR_DECL_TYPE) {
+	if (obj->idecl->type != IDECL_DECL || obj->idecl->aexpr->type != EXPR_DECL_TYPE) {
 		error_norec(ctx, loc, "'%s' is not a type",
 				ident_unparse(obj->name));
 	}
 
 	// compute type dimensions
-	const struct ast_decl_type *decl = &obj->idecl->expr->decl_type;
+	const struct ast_decl_type *decl = &obj->idecl->aexpr->decl_type;
 	struct errors **cur_err = ctx->next;
 	struct dimensions dim = type_store_lookup_dimensions(ctx, decl->type);
 	obj->idecl->in_progress = false;
@@ -4474,7 +4448,7 @@ resolve_type(struct context *ctx, struct scope_object *obj)
 
 	append_decl(ctx, &(struct declaration){
 		.decl_type = DECL_TYPE,
-		.file = obj->idecl->expr->loc.file,
+		.file = obj->idecl->aexpr->loc.file,
 		.ident = obj->ident,
 		.exported = decl->attrs.is_exported,
 		.type = alias,
@@ -4484,7 +4458,7 @@ resolve_type(struct context *ctx, struct scope_object *obj)
 static void
 resolve_const(struct context *ctx, struct scope_object *obj)
 {
-	const struct ast_expression *aexpr = obj->idecl->expr;
+	const struct ast_expression *aexpr = obj->idecl->aexpr;
 	const struct ast_expression_binding *binding = &aexpr->binding;
 	assert(!binding->attrs.symbol); // Invariant
 
@@ -4586,7 +4560,7 @@ end:
 static void
 resolve_binding(struct context *ctx, struct scope_object *obj)
 {
-	const struct ast_expression *aexpr = obj->idecl->expr;
+	const struct ast_expression *aexpr = obj->idecl->aexpr;
 	const struct ast_expression_binding *binding = &aexpr->binding;
 	if (aexpr->type == EXPR_DEFINE) {
 		resolve_const(ctx, obj);
@@ -4681,7 +4655,7 @@ end:;
 
 	append_decl(ctx, &(struct declaration){
 		.decl_type = DECL_GLOBAL,
-		.file = obj->idecl->expr->loc.file,
+		.file = obj->idecl->aexpr->loc.file,
 		.ident = name,
 		.symbol = ident_to_sym(ctx->itbl, obj->ident),
 
@@ -4705,8 +4679,8 @@ resolve_decl(struct context *ctx, struct scope_object *obj)
 		break;
 	}
 
-	const struct ast_expression *expr = obj->idecl->expr;
-	switch (expr->type) {
+	const struct ast_expression *aexpr = obj->idecl->aexpr;
+	switch (aexpr->type) {
 	case EXPR_DECL_FN:
 		resolve_function(ctx, obj);
 		break;
@@ -4716,6 +4690,14 @@ resolve_decl(struct context *ctx, struct scope_object *obj)
 	case EXPR_BINDING:
 	case EXPR_DEFINE:
 		resolve_binding(ctx, obj);
+		break;
+	case EXPR_ASSERT:;
+		struct expression expr = {0};
+		assert(aexpr->type == EXPR_ASSERT);
+		assert(aexpr->assert.is_static);
+		expr.loc = aexpr->loc;
+		check_expr_assert(ctx, aexpr, &expr, NULL, true);
+		eval_assert(ctx, &expr, true);
 		break;
 	default:
 		abort(); // Invariant
@@ -4749,7 +4731,7 @@ wrap_resolver(struct context *ctx, struct scope_object *obj, resolvefn resolver)
 		if (obj->idecl->type == IDECL_ENUM_FLD) {
 			loc = obj->idecl->field->field->loc;
 		} else {
-			loc = obj->idecl->expr->loc;
+			loc = obj->idecl->aexpr->loc;
 		}
 		error_norec(ctx, loc, "Circular dependency for '%s'",
 			ident_unparse(obj->name));
@@ -5005,9 +4987,9 @@ check_internal(type_store *ts,
 			obj; obj = obj->lnext) {
 		wrap_resolver(&ctx, obj, resolve_decl);
 		// populate the expression graph
-		if (obj->idecl->type == IDECL_DECL && obj->idecl->expr->type == EXPR_DECL_FN) {
+		if (obj->idecl->type == IDECL_DECL && obj->idecl->aexpr->type == EXPR_DECL_FN) {
 			ctx.unit->parent = obj->idecl->imports;
-			check_function(&ctx, obj, obj->idecl->expr);
+			check_function(&ctx, obj, obj->idecl->aexpr);
 		}
 	}
 
