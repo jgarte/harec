@@ -70,7 +70,8 @@ tests = \
 	tests/35-floats \
 	tests/36-defines \
 	tests/37-annotations \
-	tests/38-if_let
+	tests/38-if_let \
+	tests/39-comptime
 
 
 tests/00-literals: $(HARECACHE)/rt.o $(HARECACHE)/testmod.o $(HARECACHE)/tests_00_literals.o
@@ -490,7 +491,6 @@ $(HARECACHE)/tests_37_annotations.ssa: $(tests_37_annotations_ha) $(HARECACHE)/r
 	@printf 'HAREC\t%s\n' '$@'
 	@$(TDENV) $(BINOUT)/harec $(HARECFLAGS) -o $@ $(tests_37_annotations_ha)
 
-
 tests/38-if_let: $(HARECACHE)/rt.o $(HARECACHE)/tests_38_if_let.o
 	@printf 'LD\t%s\t\n' '$@'
 	@$(LD) $(LDLINKFLAGS) -T rt/hare.sc -o $@ $(HARECACHE)/rt.o $(HARECACHE)/tests_38_if_let.o
@@ -500,3 +500,13 @@ $(HARECACHE)/tests_38_if_let.ssa: $(tests_38_if_let_ha) $(HARECACHE)/rt.td $(BIN
 	@mkdir -p -- $(HARECACHE)
 	@printf 'HAREC\t%s\n' '$@'
 	@$(TDENV) $(BINOUT)/harec $(HARECFLAGS) -o $@ $(tests_38_if_let_ha)
+
+tests/39-comptime: $(HARECACHE)/rt.o $(HARECACHE)/tests_39_comptime.o
+	@printf 'LD\t%s\t\n' '$@'
+	@$(LD) $(LDLINKFLAGS) -T rt/hare.sc -o $@ $(HARECACHE)/rt.o $(HARECACHE)/tests_39_comptime.o
+
+tests_39_comptime_ha = tests/39-comptime.ha
+$(HARECACHE)/tests_39_comptime.ssa: $(tests_39_comptime_ha) $(HARECACHE)/rt.td $(BINOUT)/harec
+	@mkdir -p -- $(HARECACHE)
+	@printf 'HAREC\t%s\n' '$@'
+	@$(TDENV) $(BINOUT)/harec $(HARECFLAGS) -o $@ $(tests_39_comptime_ha)

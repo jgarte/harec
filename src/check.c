@@ -1912,31 +1912,6 @@ check_expr_decl_fn(struct context *ctx,
 
 	expr->type = EXPR_DECL_FN;
 	expr->result = &builtin_type_void;
- 
- 	const struct ast_decl_func *func = &aexpr->decl_func;
- 	struct ident *name, *ident;
- 	if (func->attrs.flags) {
- 		const char *template = NULL;
- 		if (func->attrs.flags & FN_TEST) {
- 			template = "testfunc.%d";
- 		} else if (func->attrs.flags & FN_INIT) {
- 			template = "initfunc.%d";
- 		} else if (func->attrs.flags & FN_FINI) {
- 			template = "finifunc.%d";
- 		}
- 		assert(template);
- 		ident = name = intern_generated(ctx, template);
- 	} else {
- 		ident = mkident(ctx, func->ident, func->attrs.symbol);
- 		name = func->ident;
- 	}
- 	struct scope_object *obj = incomplete_decl_create(ctx,
- 		aexpr->loc, ctx->scope, ident, name);
- 	// TODO:
- 	//check_hosted_main(ctx, decl->loc, decl, ident, func->symbol);
- 	obj->idecl->type = IDECL_DECL;
-	obj->idecl->expr = aexpr;
- 	obj->idecl->imports = ctx->subunit;
 }
 
 static void
@@ -4975,7 +4950,7 @@ check_internal(type_store *ts,
 		}
 		if (shadowed_obj->otype == O_SCAN) {
 			if (shadowed_obj->idecl->type == IDECL_DECL &&
-					shadowed_obj->idecl->expr->type == EXPR_DEFINE) {
+					shadowed_obj->idecl->aexpr->type == EXPR_DEFINE) {
 				continue;
 			}
 		}

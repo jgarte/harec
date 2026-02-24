@@ -1601,7 +1601,6 @@ eval_expr(struct context *ctx,
 	case EXPR_DELETE:
 	case EXPR_FOR:
 	case EXPR_FREE:
-	case EXPR_IF:
 	case EXPR_IF_LET:
 	case EXPR_INSERT:
 	case EXPR_MATCH:
