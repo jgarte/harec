@@ -88,7 +88,9 @@ ftrunc(struct context *ctx, const struct type *type, double val)
 
 static bool
 lit_expr_equal(struct context *ctx,
-	const struct expression *lvalue, const struct expression *rvalue)
+	const struct expression *lvalue,
+	const struct expression *rvalue,
+	bool *out)
 {
 	assert(lvalue->type == EXPR_LITERAL && rvalue->type == EXPR_LITERAL);
 
@@ -106,26 +108,28 @@ lit_expr_equal(struct context *ctx,
 	if (type_dealias(ctx, lvalue->result)->storage == STORAGE_POINTER) {
 		return false;
 	} else if (type_is_float(ctx, lvalue->result)) {
-		return ftrunc(ctx, lvalue->result, flval) == ftrunc(ctx, rvalue->result, frval);
+		*out = ftrunc(ctx, lvalue->result, flval) == ftrunc(ctx, rvalue->result, frval);
 	} else if (type_is_signed(ctx, lvalue->result)) {
-		return itrunc(ctx, lvalue->result, ilval) == itrunc(ctx, rvalue->result, irval);
+		*out = itrunc(ctx, lvalue->result, ilval) == itrunc(ctx, rvalue->result, irval);
 	} else if (type_is_integer(ctx, lvalue->result)) {
-		return itrunc(ctx, lvalue->result, ulval) == itrunc(ctx, rvalue->result, urval);
+		*out = itrunc(ctx, lvalue->result, ulval) == itrunc(ctx, rvalue->result, urval);
 	} else if (type_dealias(ctx, lvalue->result)->storage == STORAGE_BOOL) {
-		return lvalue->literal.bval == rvalue->literal.bval;
+		*out = lvalue->literal.bval == rvalue->literal.bval;
 	} else if (type_dealias(ctx, lvalue->result)->storage == STORAGE_RCONST
 			|| type_dealias(ctx, lvalue->result)->storage == STORAGE_RUNE) {
-		return lvalue->literal.rune == rvalue->literal.rune;
+		*out = lvalue->literal.rune == rvalue->literal.rune;
 	} else {
 		assert(type_dealias(ctx, lvalue->result)->storage == STORAGE_STRING);
 		if (lvalue->literal.string.len != rvalue->literal.string.len) {
-			return false;
+			*out = false;
 		} else {
-			return memcmp(lvalue->literal.string.value,
+			*out = memcmp(lvalue->literal.string.value,
 				rvalue->literal.string.value,
 				lvalue->literal.string.len) == 0;
 		}
 	}
+
+	return true;
 }
 
 static bool
@@ -421,10 +425,15 @@ eval_binarithm(struct context *ctx,
 		bval = blval && brval;
 		break;
 	case BIN_NEQUAL:
-		bval = !lit_expr_equal(ctx, &lvalue, &rvalue);
+		if (!lit_expr_equal(ctx, &lvalue, &rvalue, &bval)) {
+			return false;
+		}
+		bval = !bval;
 		break;
 	case BIN_LEQUAL:
-		bval = lit_expr_equal(ctx, &lvalue, &rvalue);
+		if (!lit_expr_equal(ctx, &lvalue, &rvalue, &bval)) {
+			return false;
+		}
 		break;
 	case BIN_LESS:
 		if (type_is_float(ctx, lvalue.result)) {
@@ -1358,6 +1367,46 @@ eval_slice(struct context *ctx,
 }
 
 static bool
+eval_switch(struct context *ctx,
+	const struct expression *restrict in,
+	struct expression *restrict out)
+{
+	struct expression val = {0};
+	if (!eval_expr(ctx, in->_switch.value, &val)) {
+		return false;
+	}
+
+	struct switch_case *_default = NULL;
+	for (struct switch_case *_case = in->_switch.cases;
+			_case; _case = _case->next) {
+		if (!_case->options) {
+			_default = _case;
+			continue;
+		}
+
+		bool is_match = false;
+		for (struct case_option *opt = _case->options;
+				opt; opt = opt->next) {
+			if (!lit_expr_equal(ctx, opt->value, &val, &is_match)) {
+				return false;
+			}
+			if (is_match) {
+				break;
+			}
+		}
+
+		if (!is_match) {
+			continue;
+		}
+
+		return eval_expr(ctx, _case->value, out);
+	}
+
+	assert(_default);
+	return eval_expr(ctx, _default->value, out);
+}
+
+static bool
 eval_tuple(struct context *ctx,
 	const struct expression *restrict in,
 	struct expression *restrict out)
@@ -1599,6 +1648,8 @@ eval_expr(struct context *ctx,
 		return eval_struct(ctx, in, out);
 	case EXPR_SLICE:
 		return eval_slice(ctx, in, out);
+	case EXPR_SWITCH:
+		return eval_switch(ctx, in, out);
 	case EXPR_TUPLE:
 		return eval_tuple(ctx, in, out);
 	case EXPR_UNARITHM:
@@ -1624,7 +1675,6 @@ eval_expr(struct context *ctx,
 	case EXPR_MATCH:
 	case EXPR_PROPAGATE:
 	case EXPR_RETURN:
-	case EXPR_SWITCH:
 	case EXPR_VAARG:
 	case EXPR_VAEND:
 	case EXPR_VASTART:
