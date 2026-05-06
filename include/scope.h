@@ -16,6 +16,7 @@ enum object_type {
 enum scope_object_flags {
 	SO_THREADLOCAL = 1 << 0,
 	SO_FOR_EACH_SUBJECT = 1 << 1,
+	SO_EXTERN = 1 << 2,
 };
 
 struct scope_object {

@@ -46,6 +46,7 @@ mkval(const struct gen_value *value, const struct qbe_type *type)
 		qval.kind = QV_GLOBAL;
 		qval.name = value->name;
 		qval.threadlocal = value->threadlocal;
+		qval.external = value->external;
 		break;
 	case GV_TEMP:
 		qval.kind = QV_TEMPORARY;

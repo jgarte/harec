@@ -58,7 +58,7 @@ enum qbe_value_kind {
 
 struct qbe_value {
 	enum qbe_value_kind kind;
-	bool threadlocal;
+	bool threadlocal, external;
 	const struct qbe_type *type;
 	union {
 		const char *name;

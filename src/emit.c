@@ -113,6 +113,9 @@ emit_value(const struct qbe_value *val, FILE *out)
 		emit_const(val, out);
 		break;
 	case QV_GLOBAL:
+		if (val->external) {
+			xfprintf(out, "extern ");
+		}
 		if (val->threadlocal) {
 			xfprintf(out, "thread ");
 		}

@@ -626,6 +626,7 @@ gen_access_ident(struct gen_context *ctx, const struct scope_object *obj)
 			.type = obj->type,
 			.name = ident_to_sym(ctx->itbl, obj->ident),
 			.threadlocal = obj->flags & SO_THREADLOCAL,
+			.external = obj->flags & SO_EXTERN,
 		};
 	case O_CONST:
 	case O_TYPE:

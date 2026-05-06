@@ -42,6 +42,7 @@ struct context {
 	struct declarations *decls;
 	struct ast_types *unresolved;
 	struct intern_table *itbl;
+	enum scope_object_flags object_flags;
 };
 
 struct constant_decl {

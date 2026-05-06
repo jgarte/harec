@@ -4376,6 +4376,7 @@ end:;
 	if (decl->threadlocal) {
 		obj->flags |= SO_THREADLOCAL;
 	}
+	obj->flags |= ctx->object_flags;
 
 	append_decl(ctx, &(struct declaration){
 		.decl_type = DECL_GLOBAL,
@@ -4683,6 +4684,7 @@ scan_decl(struct context *ctx, struct scope *imports, const struct ast_decl *dec
 		}
 		obj = incomplete_decl_create(ctx, decl->loc,
 			ctx->scope, ident, name);
+		obj->flags = SO_EXTERN;
 		check_hosted_main(ctx, decl->loc, decl, ident, func->symbol);
 		obj->idecl->type = IDECL_DECL;
 		obj->idecl->decl = (struct ast_decl){
@@ -4947,6 +4949,8 @@ check_internal(type_store *ts,
 	struct scopes *subunit_scopes = NULL, **next = &subunit_scopes;
 	struct scope *su_scope = NULL;
 	struct identifiers **inext = &unit->imports;
+	ctx.object_flags |= SO_EXTERN;
+
 	for (const struct ast_subunit *su = &aunit->subunits;
 			su; su = su->next) {
 		su_scope = NULL;
@@ -5018,6 +5022,8 @@ check_internal(type_store *ts,
 			check_function(&ctx, obj, &obj->idecl->decl);
 		}
 	}
+
+	ctx.object_flags &= ~SO_EXTERN;
 
 	assert(ctx.unresolved == NULL);
 	handle_errors(ctx.errors);
