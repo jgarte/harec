@@ -39,7 +39,7 @@ export fn compile(
 ) (void | error) = {
 	let wstatus = 0;
 	let pipefd = [-1, -1];
-	assert(pipe2(&pipefd, 0) == 0);
+	assert(pipe(&pipefd) == 0);
 
 	const child = fork();
 	if (child == 0) {
@@ -72,7 +72,7 @@ export fn compile(
 		};
 
 		close(pipefd[1]);
-		wait4(child, &wstatus, 0, null);
+		waitpid(child, &wstatus, 0);
 	};
 
 	if (!wifexited(wstatus)) {
