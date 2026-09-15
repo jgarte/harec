@@ -26,6 +26,7 @@ enum expr_type {
 	EXPR_DECL_TYPE,
 	EXPR_DEFER,
 	EXPR_DEFINE, // TODO: Remove me
+	EXPR_DEFINED,
 	EXPR_DELETE,
 	EXPR_FOR,
 	EXPR_FREE,

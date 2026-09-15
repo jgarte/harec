@@ -23,6 +23,9 @@ def Q: int = :outer {
 	};
 };
 
+static assert(@defined(Q));
+static assert(!@defined(Z));
+
 if (true) {
 	assert(Q == 42);
 };
