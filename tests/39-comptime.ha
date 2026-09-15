@@ -72,6 +72,28 @@ fn invalid_cases() void = {
 	`)!;
 };
 
+fn static_exprs() void = {
+	def COND: bool = true;
+	static if (COND) {
+		void;
+	} else {
+		"foo" == 10; // Should not be type checked
+	};
+	static if (!COND) {
+		"foo" == 10;
+	} else {
+		void;
+	};
+	def BAR = 10;
+	static if (BAR == 1) {
+		"foo" == 10;
+	} else if (BAR == 10) {
+		void;
+	} else {
+		"foo" == 10;
+	};
+};
+
 export fn main() void = {
 	assert(global == 1337);
 	assert(add(2, 3) == 5);
@@ -79,4 +101,5 @@ export fn main() void = {
 	assert(x.x == 10 && x.y == 20);
 	assert(plat == "Linux");
 	invalid_cases();
+	static_exprs();
 };

@@ -1363,6 +1363,8 @@ parse_slice_mutation(struct lexer *lexer, bool is_static)
 
 static struct ast_expression *
 parse_postfix_expression(struct lexer *lexer, struct ast_expression *lvalue);
+static struct ast_expression *
+parse_if_expression(struct lexer *lexer, bool is_static);
 
 static struct ast_expression *
 parse_static_expression(struct lexer *lexer, bool allowbinding)
@@ -1389,6 +1391,8 @@ parse_static_expression(struct lexer *lexer, bool allowbinding)
 		struct ast_expression *lval = parse_slice_mutation(lexer, true);
 		// XXX: this is a hack around #954
 		return parse_postfix_expression(lexer, lval);
+	case T_IF:
+		return parse_if_expression(lexer, true);
 	default:
 		if (allowbinding) {
 			synerr(&tok, T_LET, T_CONST, T_ABORT,
@@ -1772,7 +1776,7 @@ parse_bin_expression(struct lexer *lexer, struct ast_expression *lvalue, int i)
 }
 
 static struct ast_expression *
-parse_if_expression(struct lexer *lexer)
+parse_if_expression(struct lexer *lexer, bool is_static)
 {
 	struct ast_expression *exp = mkexpr(lexer->loc);
 	struct token tok = {0};
@@ -1797,8 +1801,14 @@ parse_if_expression(struct lexer *lexer)
 	want(lexer, T_RPAREN, &tok);
 
 	exp->_if.true_branch = parse_expression(lexer);
+	exp->_if.is_static = is_static;
 
 	if (try(lexer, T_ELSE)) {
+		if (is_static && try(lexer, T_IF)) {
+			exp->_if.false_branch = parse_if_expression(lexer, true);
+			return exp;
+		}
+
 		exp->_if.false_branch = parse_expression(lexer);
 	}
 	return exp;
@@ -2385,7 +2395,7 @@ parse_expression(struct lexer *lexer)
 	case T_FOR:
 		return parse_for_expression(lexer);
 	case T_IF:
-		return parse_if_expression(lexer);
+		return parse_if_expression(lexer, false);
 	case T_UNDERSCORE:
 		want(lexer, T_EQUAL, NULL);
 		return parse_assignment(lexer, NULL, BIN_LEQUAL);

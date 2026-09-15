@@ -286,6 +286,7 @@ struct ast_expression_if {
 		struct ast_expression *binding;
 	};
 	struct ast_expression *true_branch, *false_branch;
+	bool is_static;
 };
 
 struct ast_expression_compound {

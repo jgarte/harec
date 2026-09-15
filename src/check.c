@@ -2537,16 +2537,40 @@ check_expr_if(struct context *ctx,
 	struct expression *expr,
 	const struct type *hint)
 {
-	expr->type = EXPR_IF;
-
 	struct expression *cond, *true_branch, *false_branch;
 
 	cond = xcalloc(1, sizeof(struct expression));
+	true_branch = xcalloc(1, sizeof(struct expression));
+	false_branch = xcalloc(1, sizeof(struct expression));
+
 	check_expression(ctx, aexpr->_if.cond, cond, &builtin_type_bool);
 
-	true_branch = xcalloc(1, sizeof(struct expression));
+	if (aexpr->_if.is_static) {
+		struct expression out = {0};
+		if (!eval_expr(ctx, cond, &out)) {
+			error(ctx, aexpr->_if.cond->loc, expr,
+				"Unable to evaluate static if condition at compile time");
+			return;
+		}
+		if (type_dealias(ctx, out.result)->storage != STORAGE_BOOL) {
+			error(ctx, aexpr->_if.cond->loc, expr,
+				"Expected if condition to be boolean");
+		}
+
+		if (out.literal.bval) {
+			check_expression(ctx, aexpr->_if.true_branch, expr, hint);
+		} else if (aexpr->_if.false_branch) {
+			check_expression(ctx, aexpr->_if.false_branch, expr, hint);
+		} else {
+			expr->type = EXPR_LITERAL;
+			expr->result = &builtin_type_void;
+		}
+		return;
+	}
+
+	expr->type = EXPR_IF;
+
 	check_expression(ctx, aexpr->_if.true_branch, true_branch, hint);
-	false_branch = xcalloc(1, sizeof(struct expression));
 	if (aexpr->_if.false_branch) {
 		check_expression(ctx, aexpr->_if.false_branch, false_branch, hint);
 	} else {
