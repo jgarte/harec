@@ -456,6 +456,13 @@ parse_enum_type(struct ident *ident, struct lexer *lexer)
 	want(lexer, T_LBRACE, NULL);
 	while (tok.token != T_RBRACE) {
 		*next = xcalloc(1, sizeof(struct ast_enum_field));
+
+		if (try(lexer, T_IF)) {
+			want(lexer, T_LPAREN, &tok);
+			(*next)->cond = parse_expression(lexer);
+			want(lexer, T_RPAREN, &tok);
+		}
+
 		want(lexer, T_NAME, &tok);
 		(*next)->name = intern_name(lexer->itbl, tok.name);
 		(*next)->loc = tok.loc;

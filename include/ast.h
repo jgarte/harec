@@ -61,6 +61,7 @@ struct ast_enum_field {
 	struct ident *name;
 	struct ast_expression *value;
 	struct ast_enum_field *next;
+	struct ast_expression *cond;
 };
 
 struct ast_enum_type {

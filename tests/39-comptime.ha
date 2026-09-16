@@ -2,6 +2,24 @@ use rt::{compile, status};
 
 def X: bool = true;
 
+type my_enum = enum {
+	A,
+	B,
+	C,
+	if (X) D,
+	if (X) E,
+	if (!X) F,
+	if (!X) G,
+};
+
+static assert(@defined(my_enum::A));
+static assert(@defined(my_enum::B));
+static assert(@defined(my_enum::C));
+static assert(@defined(my_enum::D));
+static assert(@defined(my_enum::E));
+static assert(!@defined(my_enum::F));
+static assert(!@defined(my_enum::G));
+
 if (X) {
 	fn add(x: int, y: int) int = x + y;
 

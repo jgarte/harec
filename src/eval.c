@@ -951,6 +951,24 @@ scan_enum_field(struct context *ctx, struct scope *imports,
 	if (f->next) {
 		scan_enum_field(ctx, imports, enum_scope, etype, f->next);
 	}
+
+	if (f->cond) {
+		struct expression cond;
+		check_expression(ctx, f->cond, &cond, &builtin_type_bool);
+		if (type_dealias(ctx, cond.result)->storage != STORAGE_BOOL) {
+			error(ctx, f->loc, NULL, "if condition must be boolean");
+			return;
+		}
+		struct expression out;
+		if (!eval_expr(ctx, &cond, &out)) {
+			error(ctx, f->loc, NULL, "unable to evaluate condition at compile-time");
+			return;
+		}
+		if (!out.literal.bval) {
+			return;
+		}
+	}
+
 	assert(etype->storage == STORAGE_ENUM);
 	struct incomplete_enum_field *field =
 		xcalloc(1, sizeof(struct incomplete_enum_field));
