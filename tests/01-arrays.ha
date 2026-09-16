@@ -194,8 +194,7 @@ fn contextual() void = {
 	let x: [_]f32 = [67.0];
 	let x: [_]u8 = ['x'];
 
-	let x: [_]int = [67];
-	let y = x;
+	let x: [_]int = [67], y = x;
 	static assert(len(y) == 1);
 
 	// context-defined arrays are only allowed in bindings

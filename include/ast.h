@@ -213,6 +213,7 @@ struct ast_expression_binding {
 	struct ast_type *type;
 	struct ast_expression *initializer;
 	struct ast_attributes attrs;
+	struct ast_expression_binding *next;
 };
 
 struct ast_expression_call {

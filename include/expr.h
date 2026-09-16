@@ -164,6 +164,7 @@ struct expression_binding {
 	const struct scope_object *object;
 	struct binding_unpack *unpack;
 	struct expression *initializer;
+	struct expression_binding *next;
 };
 
 enum cast_kind {

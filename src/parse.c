@@ -2207,39 +2207,48 @@ parse_binding(struct lexer *lexer, const struct ast_attributes *attrs)
 	}
 
 	struct ast_expression_binding *binding = &exp->binding;
-	binding->attrs = *attrs;
+	do {
+		binding->attrs = *attrs;
 
-	switch (lex(lexer, &tok)) {
-	case T_NAME:
-		unlex(lexer, &tok);
-		binding->names.name = parse_identifier(lexer, NULL, NULL);
-		break;
-	case T_UNDERSCORE:
-		if (exp->type != EXPR_BINDING) {
-			error(tok.loc, "can't use underscore with def");
+		switch (lex(lexer, &tok)) {
+		case T_NAME:
+			unlex(lexer, &tok);
+			binding->names.name = parse_identifier(lexer, NULL, NULL);
+			break;
+		case T_UNDERSCORE:
+			if (exp->type != EXPR_BINDING) {
+				error(tok.loc, "can't use underscore with def");
+			}
+			break;
+		case T_LPAREN:
+			if (exp->type != EXPR_BINDING) {
+				error(tok.loc, "can't use tuple unpacking to declare constant");
+			}
+			parse_binding_unpack(lexer, &binding->names);
+			break;
+		default:
+			synerr(&tok, T_NAME, T_UNDERSCORE, T_LPAREN, T_EOF);
 		}
-		break;
-	case T_LPAREN:
-		if (exp->type != EXPR_BINDING) {
-			error(tok.loc, "can't use tuple unpacking to declare constant");
+
+		if (lex(lexer, &tok) == T_COLON) {
+			binding->type = parse_binding_type(lexer);
+		} else {
+			unlex(lexer, &tok);
 		}
-		parse_binding_unpack(lexer, &binding->names);
-		break;
-	default:
-		synerr(&tok, T_NAME, T_UNDERSCORE, T_LPAREN, T_EOF);
-	}
 
-	if (lex(lexer, &tok) == T_COLON) {
-		binding->type = parse_binding_type(lexer);
-	} else {
-		unlex(lexer, &tok);
-	}
+		if (lex(lexer, &tok) == T_EQUAL) {
+			binding->initializer = parse_initializer(lexer);
+		} else {
+			unlex(lexer, &tok);
+		}
 
-	if (lex(lexer, &tok) == T_EQUAL) {
-		binding->initializer = parse_initializer(lexer);
-	} else {
-		unlex(lexer, &tok);
-	}
+		if (lex(lexer, &tok) == T_COMMA) {
+			binding->next = xcalloc(1, sizeof(*binding->next));
+			binding = binding->next;
+		}
+	} while (tok.token == T_COMMA);
+
+	unlex(lexer, &tok);
 
 	return exp;
 }
